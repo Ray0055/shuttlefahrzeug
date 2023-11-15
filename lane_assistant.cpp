@@ -33,6 +33,7 @@ public:
         cv::Mat processd_img;
         processd_img = regionDetection( image );
         processd_img = colorDetection( processd_img );
+
         processd_img = edgeDetection( processd_img );
         processd_img = lineDetection( processd_img );
         imshow( "lane detection", processd_img );
@@ -115,14 +116,14 @@ protected:
         colorThreshold( img, mask_yellow, lower_yellow, upper_yellow );
 
         // white region hsv threshold
-        cv::Scalar lower_white( 0, 10, 50 );
+        cv::Scalar lower_white( 0, 20, 60 );
         cv::Scalar upper_white( 180, 70, 255 );
         colorThreshold( img, mask_white, lower_white, upper_white );
 
         cv::bitwise_or( mask_yellow, mask_white, mask_combined );
         return mask_combined;
     }
-    cv::Mat edgeDetection( cv::Mat image )
+    Mat edgeDetection( cv::Mat image )
     {
         cv::Mat grad_img, blurred_img;
         /* Solber function
@@ -149,30 +150,69 @@ cv::convertScaleAbs( grad_y, abs_grad_y );
 cv::addWeighted( abs_grad_x, 0.5, abs_grad_y, 0.5, 0, grad );
 
 */
-        cv::GaussianBlur( image, blurred_img, cv::Size( 3, 3 ), 0, 0, cv::BORDER_DEFAULT );
+        cv::GaussianBlur( image, blurred_img, cv::Size( 3, 3 ), 20, 0, cv::BORDER_DEFAULT );
+
         cv::Canny( image, grad_img, 50, 200 );
+
         return grad_img;
     }
 
-    cv::Mat lineDetection( cv::Mat img )
+    Mat lineDetection( cv::Mat img )
     {
         Mat img_color;
         std::vector<Vec4i> lines;
-        cv::HoughLinesP( img, lines, 6, CV_PI / 60, 200, 40, 20 );
+        cv::HoughLinesP( img, lines, 5, CV_PI / 60, 40, 120, 10 );
 
         cvtColor( img, img_color, COLOR_GRAY2BGR );
 
         // painting lines in original image
-        for( size_t i = 0; i < lines.size(); i++ )
+        /*for( size_t i = 0; i < lines.size(); i++ )
         {
             Vec4i l = lines[i];
+			
             line( img_color, Point( l[0], l[1] ), Point( l[2], l[3] ), Scalar( 0, 0, 255 ), 3,
                   LINE_AA );
-        }
+        }*/
+
+
 
         return img_color;
     }
 
+    vector<Point2f> mergeLine( vector<Vec4i> lines )
+    {
+        vector<Point2f> points;
+
+		//Divide lines into right and left
+
+
+
+        for( size_t i = 0; i < lines.size() ;i++ )
+        {
+            Vec4i l = lines[i];
+            points.push_back( Point2f( l[0], l[1] ) );
+            points.push_back( Point2f( l[2], l[3] ) );
+        }
+
+        Vec4i line_parameter;
+        fitLine( points, line_parameter, DIST_L2, 0, 0.01, 0.01 );
+        float vx = line_parameter[0];
+        float vy = line_parameter[1];
+        float x = line_parameter[2];
+        float y = line_parameter[3];
+
+        Point2f line_point1, line_point2;
+        line_point1.x = x - vx * 100;
+        line_point1.y = y - vy * 100;
+        line_point2.x = x + vx * 100;
+        line_point2.y = y + vy * 100;
+
+		points[0] = line_point1;
+        points[1] = line_point2;
+
+		return points;
+
+    }
     // Helper functions, no changes needed
 public:
     // Function to process received tronis data
