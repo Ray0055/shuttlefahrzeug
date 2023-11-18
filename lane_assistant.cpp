@@ -31,24 +31,26 @@ public:
     void processImage( cv::Mat image )
     {
         image_ = image;
-        original_image_ = image_;
+        
         // imshow( "orignial image", image_ );
 
         regionDetection( image_ );
         // imshow( "rigion detection", image_ );
-
+        birdEyeView( image_ );
+        original_image_ = BEV_image_;
         colorDetection( image_ );
         // imshow( "color detection", image_ );
 
-        edgeDetection( image_ );
+        // edgeDetection( image_ );
         // imshow( "edge detection", image_ );
 
-        lineDetection( image_ );
-        imshow( "lane detection", image_ );
-
+        // lineDetection( image_ );
+        // imshow( "lane detection", image_ );
+        
+        
         birdEyeView( image_ );
-        imshow( "bird eye view", BEV_image_ );
-
+        // imshow( "bird eye view", BEV_image_ );
+        lineDetection2( BEV_image_, 9 );
         waitKey( 0 );
     }
 
@@ -210,10 +212,10 @@ protected:
         src[2] = Point2f( image_width, image_height );           // bottom right
         src[3] = Point2f( image_width, image_height / 2 + 45 );  // top right
 
-        dst[0] = Point2f( 0, 0 );                                 // top left
-        dst[1] = Point2f( image_width / 2 - 100, image_height );  // bottom left
-        dst[2] = Point2f( image_width / 2 + 100, image_height );  // bottom right
-        dst[3] = Point2f( image_width, 0 );                       // top right
+        dst[0] = Point2f( 0, 0 );                                // top left
+        dst[1] = Point2f( image_width / 2 - 90, image_height );  // bottom left
+        dst[2] = Point2f( image_width / 2 + 90, image_height );  // bottom right
+        dst[3] = Point2f( image_width, 0 );                      // top right
 
         Mat M = getPerspectiveTransform( src, dst );
         Mat Minv = getPerspectiveTransform( dst, src );
@@ -305,6 +307,194 @@ protected:
 
         //
         line( image, point1, point2, color, 2, LINE_AA );
+    }
+
+    void lineDetection2( Mat img, int number_of_windows )
+    {
+        Mat histogram, result;
+
+        // Binary Image
+        Mat binary_img;
+        cv::threshold( img, binary_img, 128.0, 255.0, THRESH_BINARY );
+
+        // Taks a histogram of the image
+        cv::reduce( binary_img, histogram, 0, REDUCE_SUM, CV_32F );
+
+        cvtColor( histogram, result, COLOR_GRAY2BGR );
+        result = result * 255;
+
+        // Find peaks of left and right halves of the histogram
+        int midpoint = histogram.size().width / 2;
+
+        int left_base = std::distance(
+            histogram.begin<int>(),
+            std::max_element( histogram.begin<int>(), histogram.begin<int>() + midpoint ) );
+        int right_base = std::distance(
+            histogram.begin<int>(),
+            std::max_element( histogram.begin<int>() + midpoint, histogram.end<int>() ) );
+
+        // Set the height of windows
+        int window_height = img.rows / number_of_windows;
+        int height = img.rows;
+        // Find the x and y positions of all nonzero pixels in the image
+        std::vector<cv::Point> nonzero_points;
+        cv::findNonZero( binary_img, nonzero_points );
+
+        // Current position to update the window
+        int leftx_current = left_base;
+        int rightx_current = right_base;
+
+        int margin = 50;  // width of the windows + / -margin
+        int minpix = 40;  // minimum number of pixels found to recenter window
+
+        vector<Point> left_lane_points, right_lane_points;
+
+        // Process through the window
+        for( int window = 0; window < number_of_windows; window++ )
+        {
+            // Identify window boundaries in x and y( and right and left )
+            int win_y_low = height - ( window + 1 ) * window_height;
+            int win_y_high = height - window * window_height;
+            int win_xleft_low = leftx_current - margin;
+            int win_xleft_high = leftx_current + margin;
+            int win_xright_low = rightx_current - margin;
+            int win_xright_high = rightx_current + margin;
+
+            // draw the left window
+            cv::rectangle( binary_img, Point( win_xleft_low, win_y_low ),
+                           Point( win_xleft_high, win_y_high ), Scalar( 255, 0, 0 ), 2 );
+
+            // draw the right window
+            cv::rectangle( binary_img, Point( win_xright_low, win_y_low ),
+                           Point( win_xright_high, win_y_high ), Scalar( 255, 0, 0 ), 2 );
+            
+
+            std::vector<int> good_left_inds;
+            std::vector<int> good_right_inds;
+
+            // Step through window one by one
+            for( int i = 0; i < nonzero_points.size(); ++i )
+            {
+                // filter the point whose ylabel satify the window
+                if( nonzero_points[i].y >= win_y_low && nonzero_points[i].y < win_y_high )
+                {
+                    // filter the left points
+                    if( nonzero_points[i].x >= win_xleft_low &&
+                        nonzero_points[i].x < win_xleft_high )
+                    {
+                        good_left_inds.push_back( i );
+                        left_lane_points.push_back( nonzero_points[i] );
+                    }
+                    // filter the right points
+                    if( nonzero_points[i].x >= win_xright_low &&
+                        nonzero_points[i].x < win_xright_high )
+                    {
+                        good_right_inds.push_back( i );
+                        right_lane_points.push_back( nonzero_points[i] );
+                    }
+                }
+            }
+
+            // lane_ins records all satisfied point
+            vector<vector<int>> left_lanes_inds, right_lanes_inds;
+            left_lanes_inds.push_back( good_left_inds );
+            right_lanes_inds.push_back( good_right_inds );
+
+            // If you found > minpix pixels, recenter next window on their mean position
+            if( good_left_inds.size() > minpix )
+            {
+                int sum = 0;
+                for( int i = 0; i < good_left_inds.size(); i++ )
+                {
+                    sum += nonzero_points[good_left_inds[i]].x;
+                }
+                leftx_current = sum / good_left_inds.size();
+            }
+
+            if( good_right_inds.size() > minpix )
+            {
+                int sum = 0;
+                for( int i = 0; i < good_right_inds.size(); i++ )
+                {
+                    sum += nonzero_points[good_right_inds[i]].x;
+                }
+                rightx_current = sum / good_right_inds.size();
+            }
+        }
+       
+         vector<Point> fitted_points = polyfit(left_lane_points,2);
+       
+  
+        polylines( original_image_,fitted_points, false, Scalar( 255, 0, 0 ), 10 );
+        imshow( "BEV", original_image_ );
+       
+    }
+
+    vector<Point> polyfit( std::vector<cv::Point>& points, int degree )
+    {
+        if( points.empty() )
+            throw std::invalid_argument( "Points vector is empty" );
+
+        int numCoefficients = degree + 1;
+        size_t nCount = points.size();
+
+        cv::Mat X( nCount, numCoefficients, CV_64F );
+        cv::Mat Y( nCount, 1, CV_64F );
+
+        for( size_t i = 0; i < nCount; i++ )
+        {
+            Y.at<double>( i, 0 ) = points[i].y;
+
+            double val = 1;
+            for( int j = 0; j < numCoefficients; j++ )
+            {
+                X.at<double>( i, j ) = val;
+                val *= points[i].x;
+            }
+        }
+
+        cv::Mat Xt, XtX, XtY;
+        transpose( X, Xt );
+        XtX = Xt * X;
+        XtY = Xt * Y;
+
+        cv::Mat coefficients;
+        cv::solve( XtX, XtY, coefficients, cv::DECOMP_LU );
+
+        std::vector<double> result;
+        result.reserve( numCoefficients );
+        for( int i = 0; i < numCoefficients; i++ )
+        {
+            result.push_back( coefficients.at<double>( i, 0 ) );
+        }
+
+        // Create two vectors to store x,y
+        vector<int> points_x, points_y;
+        for( int i = 0; i < points.size(); i++ )
+        {
+            points_x.push_back( points[i].x );
+            points_y.push_back( points[i].y );
+        }
+
+        // Find min, max value in x
+
+        auto minIt = min_element( points_x.begin(), points_x.end() );
+        auto maxIt = max_element( points_x.begin(), points_x.end() );
+
+        int min_x = *minIt;
+        int max_x = *maxIt;
+
+        // Calculate the fitted y value
+        vector<Point> fitted_line_points;
+        for( int i = min_x; i < max_x; i += 1 )
+        {
+            Point point;
+            point.x = i;
+            point.y = result[0] + result[1] * point.x + result[2] * point.x * point.x;
+            fitted_line_points.push_back( point );
+        }
+
+        return fitted_line_points;
     }
 
     // Helper functions, no changes needed
@@ -410,87 +600,87 @@ protected:
     }
 };
 
-// main loop opens socket and listens for incoming data
-int main( int argc, char** argv )
-{
-    std::cout << "Welcome to lane assistant" << std::endl;
-
-    // specify socket parameters
-    std::string socket_type = "TcpSocket";
-    std::string socket_ip = "127.0.0.1";
-    std::string socket_port = "50542";
-
-    std::ostringstream socket_params;
-    socket_params << "{Socket:\"" << socket_type << "\", IpBind:\"" << socket_ip
-                  << "\", PortBind:" << socket_port << "}";
-
-    int key_press = 0;  // close app on key press 'q'
-    tronis::CircularMultiQueuedSocket msg_grabber;
-    uint32_t timeout_ms = 500;  // close grabber, if last received msg is older than this param
-
-    LaneAssistant lane_assistant;
-
-    while( key_press != 'q' )
-    {
-        std::cout << "Wait for connection..." << std::endl;
-        msg_grabber.open_str( socket_params.str() );
-
-        if( !msg_grabber.isOpen() )
-        {
-            printf( "Failed to open grabber, retry...!\n" );
-            continue;
-        }
-
-        std::cout << "Start grabbing" << std::endl;
-        tronis::SocketData received_data;
-        uint32_t time_ms = 0;
-
-        while( key_press != 'q' )
-        {
-            // wait for data, close after timeout_ms without new data
-            if( msg_grabber.tryPop( received_data, true ) )
-            {
-                // data received! reset timer
-                time_ms = 0;
-
-                // convert socket data to tronis model data
-                tronis::SocketDataStream data_stream( received_data );
-                tronis::ModelDataWrapper data_model(
-                    tronis::Models::Create( data_stream, tronis::MessageFormat::raw ) );
-                if( !data_model.is_valid() )
-                {
-                    std::cout << "received invalid data, continue..." << std::endl;
-                    continue;
-                }
-                // identify data type
-                lane_assistant.getData( data_model );
-                lane_assistant.processData( msg_grabber );
-            }
-            else
-            {
-                // no data received, update timer
-                ++time_ms;
-                if( time_ms > timeout_ms )
-                {
-                    std::cout << "Timeout, no data" << std::endl;
-                    msg_grabber.close();
-                    break;
-                }
-                else
-                {
-                    std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
-                    key_press = cv::waitKey( 1 );
-                }
-            }
-        }
-        msg_grabber.close();
-    }
-    return 0;
-}
-
+//// main loop opens socket and listens for incoming data
 // int main( int argc, char** argv )
 //{
-//    Mat original_img = imread( "C:\\Users\\am3s33\\Pictures\\Camera Roll\\lane3.png" );
-//    LaneAssistant laneAssistant;
-//    laneAssistant.processImage( original_img );
+//    std::cout << "Welcome to lane assistant" << std::endl;
+//
+//    // specify socket parameters
+//    std::string socket_type = "TcpSocket";
+//    std::string socket_ip = "127.0.0.1";
+//    std::string socket_port = "50542";
+//
+//    std::ostringstream socket_params;
+//    socket_params << "{Socket:\"" << socket_type << "\", IpBind:\"" << socket_ip
+//                  << "\", PortBind:" << socket_port << "}";
+//
+//    int key_press = 0;  // close app on key press 'q'
+//    tronis::CircularMultiQueuedSocket msg_grabber;
+//    uint32_t timeout_ms = 500;  // close grabber, if last received msg is older than this param
+//
+//    LaneAssistant lane_assistant;
+//
+//    while( key_press != 'q' )
+//    {
+//        std::cout << "Wait for connection..." << std::endl;
+//        msg_grabber.open_str( socket_params.str() );
+//
+//        if( !msg_grabber.isOpen() )
+//        {
+//            printf( "Failed to open grabber, retry...!\n" );
+//            continue;
+//        }
+//
+//        std::cout << "Start grabbing" << std::endl;
+//        tronis::SocketData received_data;
+//        uint32_t time_ms = 0;
+//
+//        while( key_press != 'q' )
+//        {
+//            // wait for data, close after timeout_ms without new data
+//            if( msg_grabber.tryPop( received_data, true ) )
+//            {
+//                // data received! reset timer
+//                time_ms = 0;
+//
+//                // convert socket data to tronis model data
+//                tronis::SocketDataStream data_stream( received_data );
+//                tronis::ModelDataWrapper data_model(
+//                    tronis::Models::Create( data_stream, tronis::MessageFormat::raw ) );
+//                if( !data_model.is_valid() )
+//                {
+//                    std::cout << "received invalid data, continue..." << std::endl;
+//                    continue;
+//                }
+//                // identify data type
+//                lane_assistant.getData( data_model );
+//                lane_assistant.processData( msg_grabber );
+//            }
+//            else
+//            {
+//                // no data received, update timer
+//                ++time_ms;
+//                if( time_ms > timeout_ms )
+//                {
+//                    std::cout << "Timeout, no data" << std::endl;
+//                    msg_grabber.close();
+//                    break;
+//                }
+//                else
+//                {
+//                    std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+//                    key_press = cv::waitKey( 1 );
+//                }
+//            }
+//        }
+//        msg_grabber.close();
+//    }
+//    return 0;
 //}
+
+int main( int argc, char** argv )
+{
+    Mat original_img = imread( "C:\\Users\\am3s33\\Pictures\\Camera Roll\\lane2.png" );
+    LaneAssistant laneAssistant;
+    laneAssistant.processImage( original_img );
+}
