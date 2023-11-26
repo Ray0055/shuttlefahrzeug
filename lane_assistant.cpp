@@ -23,7 +23,8 @@ public:
     bool processData( tronis::CircularMultiQueuedSocket& socket )
     {
         // do stuff with data
-
+        string control_cmd = to_string( steer_output_norm_ );
+        socket.send( tronis::SocketData( control_cmd ) );
         // send results via socket
         return true;
     }
@@ -62,12 +63,20 @@ protected:
     tronis::OrientationSub ego_orientation_;
     double ego_velocity_;
     vector<Point> left_lane_, right_lane_;
+    double steer_output_norm_, throttle_output_norm_;
+
+    // hyperparameter of PID controller
+    double steer_P_ = 0.9;
+    double steer_D_ = 0.00001;
+    double steer_I_ = 0.00001;
+
+    // Initialize error, derivative of error, integration of error
+    double steer_error_old_ = 0;
+    double steer_error_I_ = 0;
     // Function to detect lanes based on camera image
     // Insert your algorithm here
     void detectLanes()
     {
-        cout << "Start to detect lanes: " << endl;
-
         regionDetection( image_ );
 
         colorDetection( image_ );
@@ -574,9 +583,6 @@ protected:
                             left_lane_.front().y );
         int height = original_image_.rows;
 
-        double steer_P = 1.0;
-        double steer_D = 0;
-        double steer_error_old = 0;
         // draw the target driving direction
         circle( original_image_, middle_point, 1, Scalar( 255, 0, 0 ) );
         line( original_image_, Point( target_point, height - 1 ), middle_point,
@@ -588,14 +594,17 @@ protected:
             target_point - curr_point;  // current steering error = the difference between target
                                         // position and current position
         double steer_erro_D =
-            steer_error_P - steer_error_old;  // The rate of change of the error = the difference
-                                              // between current steering error and before
-        double steer_output =
-            steer_error_P * steer_P + steer_erro_D * steer_D;  // The output from PD controller
+            steer_error_P - steer_error_old_;  // The rate of change of the error = the difference
+                                               // between current steering error and before
+        steer_error_old_ = steer_error_P;
+        steer_error_I_ = steer_error_I_ + steer_error_P;
+        double steer_output = steer_error_P * steer_P_ + steer_erro_D * steer_D_ +
+                              steer_I_ * steer_error_I_;  // The output from PD controller
 
-        double steer_output_norm = steer_output / height;  // normalize the output between -1 and 1
-
-        cv::putText( original_image_, "Steering:" + to_string( steer_output_norm ),
+        // normalize the output between -1 and 1
+        steer_output_norm_ = steer_output / (original_image_.cols / 2);
+        
+        cv::putText( original_image_, "Steering:" + to_string( steer_output_norm_ ),
                      Point( 300, 45 ), FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );
     }
     // Helper functions, no changes needed
