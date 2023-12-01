@@ -9,6 +9,8 @@
 #include <models/tronis/ImageFrame.h>
 #include <grabber/opencv_tools.hpp>
 
+#include "line_detector.h"
+
 using namespace std;
 using namespace cv;
 
@@ -22,10 +24,9 @@ public:
 
     bool processData( tronis::CircularMultiQueuedSocket& socket )
     {
-        // do stuff with data
         string control_cmd = to_string( steer_output_norm_ );
         socket.send( tronis::SocketData( control_cmd ) );
-        // send results via socket
+
         return true;
     }
 
@@ -33,27 +34,86 @@ public:
     {
         image_ = image;
         original_image_ = image;
-        // imshow( "orignial image", image_ );
-
         regionDetection( image_ );
-        // imshow( "rigion detection", image_ );
 
         colorDetection( image_ );
-        /* imshow( "color detection", image_ );*/
 
         edgeDetection( image_ );
-        // imshow( "edge detection", image_ );
 
         lineDetection( image_ );
-        // imshow( "lane detection", original_image_ );
 
         BEV_image_ = birdEyeView( image_, true );
 
-        steeringControl( image_ );
-        imshow( "bird eye view", original_image_ );
-        /*lineDetection2( image_, image, 9 );*/
-
+        steeringControl( original_image_ );
+        showImage( "original image", original_image_ );
+        showImage( "BEV_image_", BEV_image_ );
         waitKey( 0 );
+    }
+
+    void processImage_2( Mat img )
+    {
+        image_ = img;
+        original_image_ = img;
+        regionDetection( image_ );
+        Mat BEV_img_color = birdEyeView_fullscreen( image_, true );
+
+        colorDetection( image_ );
+
+        BEV_image_ = birdEyeView_fullscreen( image_, true );
+
+        if( right_lane.detected && left_lane.detected )
+        {
+            line_detection_by_previous( BEV_image_, BEV_img_color, 9, left_lane, right_lane );
+        }
+        else
+        {
+            line_dection_by_sliding_window( BEV_image_, BEV_img_color, 9, left_lane, right_lane );
+        }
+
+        draw_detected_lane_onto_road( original_image_, left_lane, right_lane );
+        get_center_of_road( original_image_, BEV_img_color, left_lane, right_lane );
+        steeringControl_poly( BEV_img_color );
+        cv::putText( BEV_img_color, "Steering:" + to_string( steer_output_norm_ ), Point( 300, 45 ),
+                     FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );
+        imshow( "BEV_img_color", BEV_img_color );
+        imshow( "output", original_image_ );
+        waitKey( 0 );
+    }
+
+    void draw_rec( Mat img )
+    {
+        /*Create bird eye view*/
+
+        int image_height = img.size().height;
+        int image_width = img.size().width;
+
+        vector<Point> src( 4 ), dst( 4 );
+        src[0] = Point( image_width / 2 - 200, image_height / 2 + 45 );  // top left
+        src[1] = Point( 0, image_height - 100 );                         // bottom left
+        src[2] = Point( image_width, image_height - 100 );               // bottom right
+        src[3] = Point( image_width / 2 + 200, image_height / 2 + 45 );  // top right
+
+        dst[0] = Point2f( image_width / 2 - 100, 0 );             // top left
+        dst[1] = Point2f( image_width / 2 - 100, image_height );  // bottom left
+        dst[2] = Point2f( image_width / 2 + 100, image_height );  // bottom right
+        dst[3] = Point2f( image_width / 2 + 100, 0 );             // top right
+
+        vector<Point> pts1 = {
+            src[0],
+            src[1],
+            src[2],
+            src[3],
+        };
+
+        vector<Point> pts2 = {
+            dst[0],
+            dst[1],
+            dst[2],
+            dst[3],
+        };
+        polylines( img, pts1, true, Scalar( 255, 0, 0 ), 2 );
+        polylines( img, pts2, true, Scalar( 255, 255, 0 ), 2 );
+        imshow( "rec", img );
     }
 
 protected:
@@ -64,11 +124,12 @@ protected:
     double ego_velocity_;
     vector<Point> left_lane_, right_lane_;
     double steer_output_norm_, throttle_output_norm_;
-
+    int processed_frames = 0;
+    Lane right_lane, left_lane;
     // hyperparameter of PID controller
-    double steer_P_ = 0.9;
-    double steer_D_ = 0.00001;
-    double steer_I_ = 0.00001;
+    double steer_P_ = 2.0;
+    double steer_D_ = 0.0000;
+    double steer_I_ = 0.0000;
 
     // Initialize error, derivative of error, integration of error
     double steer_error_old_ = 0;
@@ -90,6 +151,36 @@ protected:
         steeringControl( original_image_ );
     }
 
+    void detectLanes_poly()
+    {
+        regionDetection( image_ );
+        Mat BEV_img_color = birdEyeView_fullscreen( image_, true );
+
+        colorDetection( image_ );
+
+        BEV_image_ = birdEyeView_fullscreen( image_, true );
+
+        if( right_lane.detected && left_lane.detected )
+        {
+            line_detection_by_previous( BEV_image_, BEV_img_color, 9, left_lane, right_lane );
+        }
+        else
+        {
+            line_dection_by_sliding_window( BEV_image_, BEV_img_color, 9, left_lane, right_lane );
+        }
+
+        if( !right_lane.last_lane_points_pixel.empty() &&
+            !left_lane.last_lane_points_pixel.empty() )
+        {
+            draw_detected_lane_onto_road( original_image_, left_lane, right_lane );
+        }
+
+        get_center_of_road( original_image_, BEV_img_color, left_lane, right_lane );
+        steeringControl_poly( BEV_img_color );
+        cv::putText( BEV_img_color, "Steering:" + to_string( steer_output_norm_ ), Point( 300, 45 ),
+                     FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );
+        imshow( "BEV_img_color", BEV_img_color );
+    }
     bool processPoseVelocity( tronis::PoseVelocitySub* msg )
     {
         ego_location_ = msg->Location;
@@ -163,13 +254,13 @@ protected:
         cvtColor( img, img_hsv, COLOR_BGR2HSV );
 
         // yellow region hsv threshold
-        cv::Scalar lower_yellow( 20, 100, 100 );
+        cv::Scalar lower_yellow( 20, 100, 120 );
         cv::Scalar upper_yellow( 30, 255, 255 );
         cv::inRange( img_hsv, lower_yellow, upper_yellow, mask_yellow );
 
         // white region hsv threshold
-        cv::Scalar lower_white( 106, 0, 150 );
-        cv::Scalar upper_white( 173, 90, 230 );
+        cv::Scalar lower_white( 106, 0, 130 );
+        cv::Scalar upper_white( 173, 90, 200 );
         cv::inRange( img_hsv, lower_white, upper_white, mask_white );
 
         // Combine two regions
@@ -346,229 +437,6 @@ protected:
         return points_lane;
     }
 
-    void lineDetection2( Mat img, Mat output_img, int number_of_windows )
-    {
-        cout << "Now in line detecting.." << endl;
-        Mat histogram, result;
-
-        // Binary Image
-        Mat binary_img;
-        cv::threshold( img, binary_img, 128.0, 255.0, THRESH_BINARY );
-
-        // Taks a histogram of the image
-        cv::reduce( binary_img, histogram, 0, REDUCE_SUM, CV_32F );
-
-        cvtColor( histogram, result, COLOR_GRAY2BGR );
-        result = result * 255;
-
-        // Find peaks of left and right halves of the histogram
-        int midpoint = histogram.size().width / 2;
-
-        int left_base = std::distance(
-            histogram.begin<int>(),
-            std::max_element( histogram.begin<int>(), histogram.begin<int>() + midpoint ) );
-        int right_base = std::distance(
-            histogram.begin<int>(),
-            std::max_element( histogram.begin<int>() + midpoint, histogram.end<int>() ) );
-
-        // Set the height of windows
-        int window_height = img.rows / number_of_windows;
-        int height = img.rows;
-
-        // Find the x and y positions of all nonzero pixels in the image
-        std::vector<cv::Point> nonzero_points;
-        cv::findNonZero( binary_img, nonzero_points );
-        cout << " the number of nonzero points" << nonzero_points.size() << endl;
-        // Current position to update the window
-        int leftx_current = left_base;
-        int rightx_current = right_base;
-
-        int margin = 40;  // width of the windows + / -margin
-        int minpix = 40;  // minimum number of pixels found to recenter window
-
-        vector<Point> left_lane_points, right_lane_points;
-        cout << "Now in window.." << endl;
-        // Process through the window
-        for( int window = 0; window < number_of_windows; window++ )
-        {
-            // Identify window boundaries in x and y( and right and left )
-            int win_y_low = height - ( window + 1 ) * window_height;
-            int win_y_high = height - window * window_height;
-            int win_xleft_low = leftx_current - margin;
-            int win_xleft_high = leftx_current + margin;
-            int win_xright_low = rightx_current - margin;
-            int win_xright_high = rightx_current + margin;
-
-            // draw the left window
-            cv::rectangle( binary_img, Point( win_xleft_low, win_y_low ),
-                           Point( win_xleft_high, win_y_high ), Scalar( 255, 0, 0 ), 2 );
-
-            // draw the right window
-            cv::rectangle( binary_img, Point( win_xright_low, win_y_low ),
-                           Point( win_xright_high, win_y_high ), Scalar( 255, 0, 0 ), 2 );
-
-            std::vector<int> good_left_inds;
-            std::vector<int> good_right_inds;
-
-            // Step through window one by one
-            for( int i = 0; i < nonzero_points.size(); ++i )
-            {
-                // filter the point whose ylabel satify the window
-                if( nonzero_points[i].y >= win_y_low && nonzero_points[i].y < win_y_high )
-                {
-                    // filter the left points
-                    if( nonzero_points[i].x >= win_xleft_low &&
-                        nonzero_points[i].x < win_xleft_high )
-                    {
-                        good_left_inds.push_back( i );
-                        left_lane_points.push_back( nonzero_points[i] );
-                    }
-                    // filter the right points
-                    if( nonzero_points[i].x >= win_xright_low &&
-                        nonzero_points[i].x < win_xright_high )
-                    {
-                        good_right_inds.push_back( i );
-                        right_lane_points.push_back( nonzero_points[i] );
-                    }
-                }
-            }
-
-            // lane_ins records all satisfied point
-            vector<vector<int>> left_lanes_inds, right_lanes_inds;
-            left_lanes_inds.push_back( good_left_inds );
-            right_lanes_inds.push_back( good_right_inds );
-
-            // If you found > minpix pixels, recenter next window on their mean position
-            if( good_left_inds.size() > minpix )
-            {
-                int sum = 0;
-                for( int i = 0; i < good_left_inds.size(); i++ )
-                {
-                    sum += nonzero_points[good_left_inds[i]].x;
-                }
-                leftx_current = sum / good_left_inds.size();
-            }
-
-            if( good_right_inds.size() > minpix )
-            {
-                int sum = 0;
-                for( int i = 0; i < good_right_inds.size(); i++ )
-                {
-                    sum += nonzero_points[good_right_inds[i]].x;
-                }
-                rightx_current = sum / good_right_inds.size();
-            }
-        }
-        cout << "Now in polyfit.." << endl;
-        vector<Point2f> fitted_left_points = polyfit( left_lane_points, 2, img );
-        vector<Point2f> fitted_right_points = polyfit( right_lane_points, 2, img );
-
-        drawLanes( fitted_left_points, output_img, Scalar( 255, 0, 0 ) );
-        drawLanes( fitted_right_points, output_img, Scalar( 0, 255, 0 ) );
-
-        cout << "lines are detected" << endl;
-    }
-
-    void drawLanes( vector<Point2f> points, Mat img, Scalar lane_color )
-    {
-        int image_height = img.rows;
-        int image_width = img.cols;
-        vector<Point2f> src( 4 ), dst( 4 );
-        src[0] = Point2f( 0, image_height / 2 + 45 );            // top left
-        src[1] = Point2f( 0, image_height );                     // bottom left
-        src[2] = Point2f( image_width, image_height );           // bottom right
-        src[3] = Point2f( image_width, image_height / 2 + 45 );  // top right
-
-        dst[0] = Point2f( 0, 0 );                                // top left
-        dst[1] = Point2f( image_width / 2 - 45, image_height );  // bottom left
-        dst[2] = Point2f( image_width / 2 + 45, image_height );  // bottom right
-        dst[3] = Point2f( image_width, 0 );                      // top right
-
-        Mat Minv = getPerspectiveTransform( dst, src );
-
-        vector<Point2f> output_points;
-
-        cv::perspectiveTransform( points, output_points, Minv );
-
-        // convert Point2f to Point
-        std::vector<cv::Point> intger_points;
-        for( auto pt : output_points )
-        {
-            intger_points.push_back(
-                cv::Point( static_cast<int>( pt.x ), static_cast<int>( pt.y ) ) );
-        }
-
-        // Draw fitted lanes on a blank image
-        cv::polylines( img, intger_points, false, lane_color, 10 );
-    }
-
-    vector<Point2f> polyfit( std::vector<cv::Point>& points, int degree, Mat img )
-    {
-        /* if( points.empty() )
-             throw std::invalid_argument( "Points vector is empty" );*/
-
-        int numCoefficients = degree + 1;
-        size_t nCount = points.size();
-
-        cv::Mat X( nCount, numCoefficients, CV_64F );
-        cv::Mat Y( nCount, 1, CV_64F );
-
-        for( size_t i = 0; i < nCount; i++ )
-        {
-            Y.at<double>( i, 0 ) = points[i].y;
-
-            double val = 1;
-            for( int j = 0; j < numCoefficients; j++ )
-            {
-                X.at<double>( i, j ) = val;
-                val *= points[i].x;
-            }
-        }
-
-        cv::Mat Xt, XtX, XtY;
-        transpose( X, Xt );
-        XtX = Xt * X;
-        XtY = Xt * Y;
-
-        cv::Mat coefficients;
-        cv::solve( XtX, XtY, coefficients, cv::DECOMP_LU );
-
-        std::vector<double> result;
-        result.reserve( numCoefficients );
-        for( int i = 0; i < numCoefficients; i++ )
-        {
-            result.push_back( coefficients.at<double>( i, 0 ) );
-        }
-
-        // Create two vectors to store x,y
-        vector<int> points_x, points_y;
-        for( int i = 0; i < points.size(); i++ )
-        {
-            points_x.push_back( points[i].x );
-            points_y.push_back( points[i].y );
-        }
-
-        // Find min, max value in x
-
-        auto minIt = min_element( points_x.begin(), points_x.end() );
-        auto maxIt = max_element( points_x.begin(), points_x.end() );
-
-        int min_x = *minIt;
-        int max_x = *maxIt;
-
-        // Calculate the fitted y value
-        vector<Point2f> fitted_line_points;
-        for( int i = min_x; i < max_x; i += 1 )
-        {
-            Point point;
-            point.x = i;
-            point.y = result[0] + result[1] * point.x + result[2] * point.x * point.x;
-            fitted_line_points.push_back( point );
-        }
-
-        return fitted_line_points;
-    }
-
     /*     Steering       */
     void steeringControl( Mat img )
     {
@@ -602,11 +470,55 @@ protected:
                               steer_I_ * steer_error_I_;  // The output from PD controller
 
         // normalize the output between -1 and 1
-        steer_output_norm_ = steer_output / (original_image_.cols / 2);
-        
+        steer_output_norm_ = steer_output / ( original_image_.cols / 2 );
+
         cv::putText( original_image_, "Steering:" + to_string( steer_output_norm_ ),
                      Point( 300, 45 ), FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );
     }
+
+    void steeringControl_poly( Mat BEV_img_color )
+    {
+
+        vector<Point> center_lane_pts_pixel = right_lane.last_center_pts_pixel;
+        if( center_lane_pts_pixel.empty() )
+        {
+            return;
+        }
+
+        // Use PID controller to control steering
+        Point middle_point = center_lane_pts_pixel.back();
+        double target_point = middle_point.x;
+        double curr_point = BEV_img_color.cols / 2;
+        int height = BEV_img_color.rows;
+
+        // draw the target driving direction
+        line( BEV_img_color, Point( curr_point, height - 1 ), middle_point, Scalar( 0, 0, 255 ),
+              5 );
+
+        double steer_error_P =
+            target_point - curr_point;  // current steering error = the difference between target
+                                        // position and current position
+        double steer_erro_D =
+            steer_error_P - steer_error_old_;  // The rate of change of the error = the difference
+                                               // between current steering error and before
+        steer_error_old_ = steer_error_P;
+        steer_error_I_ = steer_error_I_ + steer_error_P;
+        double steer_output = steer_error_P * steer_P_ + steer_erro_D * steer_D_ +
+                              steer_I_ * steer_error_I_;  // The output from PD controller
+
+        // normalize the output between -1 and 1
+        steer_output_norm_ = steer_output / ( BEV_img_color.cols / 2.0 );
+
+		if( steer_output_norm_ < -1.0 )
+        {
+                    steer_output_norm_ = -1.0;
+        }
+        else if( steer_output_norm_ > 1.0 )
+        {
+            steer_output_norm_ = 1.0;
+		}
+    }
+
     // Helper functions, no changes needed
 public:
     // Function to process received tronis data
@@ -703,15 +615,18 @@ protected:
         image_name_ = base_name;
         image_ = tronis::image2Mat( image );
         original_image_ = image_;
-        detectLanes();
-        // showImage( image_name_, detectLanes(image_) );
-        showImage( image_name_, original_image_ );
-        showImage( "Bird Eye View", BEV_image_ );
+
+        detectLanes_poly();
+
+        showImage( "Lane detection", original_image_ );
+        showImage( "BEV_image", BEV_image_ );
     }
 };
 
 // main loop opens socket and listens for incoming data
-int main( int argc, char** argv )
+
+
+ int main( int argc, char** argv )
 {
     std::cout << "Welcome to lane assistant" << std::endl;
 
@@ -787,10 +702,10 @@ int main( int argc, char** argv )
     }
     return 0;
 }
-
-// int main( int argc, char** argv )
+//
+//int main( int argc, char** argv )
 //{
-//    Mat original_img = imread( "C:\\Users\\am3s33\\Pictures\\Camera Roll\\lane1.png" );
-//    LaneAssistant laneAssistant;
-//    laneAssistant.processImage( original_img );
+//    Mat original_img = imread( "c:\\users\\am3s33\\pictures\\camera roll\\lane4.png" );
+//    LaneAssistant laneassistant;
+//    laneassistant.processImage_2( original_img );
 //}
