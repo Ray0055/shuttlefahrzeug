@@ -8,7 +8,7 @@
 #include <communication/multi_socket.h>
 #include <models/tronis/ImageFrame.h>
 #include <grabber/opencv_tools.hpp>
-
+#include <models/tronis/BoxData.h>
 #include "line_detector.h"
 
 using namespace std;
@@ -24,7 +24,8 @@ public:
 
     bool processData( tronis::CircularMultiQueuedSocket& socket )
     {
-        string control_cmd = to_string( steer_output_norm_ );
+        string control_cmd =
+            std::to_string( steer_output_norm_ ) + ";" + std::to_string( throttle_output_norm_ );
         socket.send( tronis::SocketData( control_cmd ) );
 
         return true;
@@ -71,49 +72,13 @@ public:
         }
 
         draw_detected_lane_onto_road( original_image_, left_lane, right_lane );
-        get_center_of_road( original_image_, BEV_img_color, left_lane, right_lane );
+        // get_center_of_road( original_image_, BEV_img_color, left_lane, right_lane );
         steeringControl_poly( BEV_img_color );
         cv::putText( BEV_img_color, "Steering:" + to_string( steer_output_norm_ ), Point( 300, 45 ),
                      FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );
         imshow( "BEV_img_color", BEV_img_color );
         imshow( "output", original_image_ );
         waitKey( 0 );
-    }
-
-    void draw_rec( Mat img )
-    {
-        /*Create bird eye view*/
-
-        int image_height = img.size().height;
-        int image_width = img.size().width;
-
-        vector<Point> src( 4 ), dst( 4 );
-        src[0] = Point( image_width / 2 - 200, image_height / 2 + 45 );  // top left
-        src[1] = Point( 0, image_height - 100 );                         // bottom left
-        src[2] = Point( image_width, image_height - 100 );               // bottom right
-        src[3] = Point( image_width / 2 + 200, image_height / 2 + 45 );  // top right
-
-        dst[0] = Point2f( image_width / 2 - 100, 0 );             // top left
-        dst[1] = Point2f( image_width / 2 - 100, image_height );  // bottom left
-        dst[2] = Point2f( image_width / 2 + 100, image_height );  // bottom right
-        dst[3] = Point2f( image_width / 2 + 100, 0 );             // top right
-
-        vector<Point> pts1 = {
-            src[0],
-            src[1],
-            src[2],
-            src[3],
-        };
-
-        vector<Point> pts2 = {
-            dst[0],
-            dst[1],
-            dst[2],
-            dst[3],
-        };
-        polylines( img, pts1, true, Scalar( 255, 0, 0 ), 2 );
-        polylines( img, pts2, true, Scalar( 255, 255, 0 ), 2 );
-        imshow( "rec", img );
     }
 
 protected:
@@ -134,6 +99,30 @@ protected:
     // Initialize error, derivative of error, integration of error
     double steer_error_old_ = 0;
     double steer_error_I_ = 0;
+
+    // Initialize throttle PID controller and parameters
+
+    double max_velocity = 55;  // max velocity
+    double throttle_P = 10;
+    double throttle_I = 0;
+    double throttle_D = 5;
+    double throttle_error_old = 0;
+    double throttle_error_I = 0;
+
+    // Initialize distance PID controller and parameters
+    bool isCardAhead;
+    double distance_;
+    double old_distance_;
+    double min_distance = 30;  // min safe car-car distance
+    double distance_P = 0.03;
+    double distance_I = 0;
+    double distance_D = 0.0003;
+    double distance_error_old = 0;
+    double distance_error_I = 0;
+    string controlMode;
+
+    double new_time;
+    double old_time;
     // Function to detect lanes based on camera image
     // Insert your algorithm here
     void detectLanes()
@@ -175,23 +164,80 @@ protected:
             draw_detected_lane_onto_road( original_image_, left_lane, right_lane );
         }
 
-        get_center_of_road( original_image_, BEV_img_color, left_lane, right_lane );
         steeringControl_poly( BEV_img_color );
         cv::putText( BEV_img_color, "Steering:" + to_string( steer_output_norm_ ), Point( 300, 45 ),
                      FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );
-        imshow( "BEV_img_color", BEV_img_color );
+        cv::polylines( BEV_img_color, right_lane.last_center_pts_pixel, false,
+                       Scalar( 246, 161, 75 ), 5 );
+        BEV_image_ = BEV_img_color;
+
+        cv::putText( BEV_img_color, "Distance:" + to_string( distance_ ), Point( 300, 145 ),
+                     FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );
+
+        cv::putText( BEV_img_color, "Controll Mode:" + controlMode, Point( 300, 245 ),
+                     FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );
+        throttleControl();
+
+        if( isCardAhead )
+        {
+            double speed = speedEstimator();
+            cv::putText( BEV_img_color, "Speed Ahead:" + to_string( speed ), Point( 300, 345 ),
+                         FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );
+        }
+        cv::putText( BEV_img_color, "time gap" + to_string( new_time - old_time ),
+                     Point( 300, 445 ), FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );
     }
     bool processPoseVelocity( tronis::PoseVelocitySub* msg )
     {
         ego_location_ = msg->Location;
         ego_orientation_ = msg->Orientation;
-        ego_velocity_ = msg->Velocity;
+        ego_velocity_ = ( msg->Velocity ) * 0.036;
         return true;
     }
 
-    bool processObject()
+    bool processBoundingBox( tronis::BoxDataSub* sensorData )
     {
-        // do stuff
+        double min_distance = std::numeric_limits<double>::infinity();
+        double distance;
+
+        // Sensor may detect several objects, all objects should be processed
+        for( size_t i = 0; i < sensorData->Objects.size(); i++ )
+        {
+            tronis::ObjectSub& object = sensorData->Objects[i];
+            // std::cout << object.ActorName.Value() << " at ";
+            // std::cout << object.Pose.Location.ToString() << std::endl;
+            tronis::LocationSub location = object.Pose.Location;
+            float pos_x = location.X;
+            float pos_y = location.Y;
+
+            tronis::ExtendSub extends = object.BB.Extends;
+            float length = extends.X;
+            float width = extends.Y;
+            float height = extends.Z;
+
+            // filter detected cars
+            if( length > 100 && length < 800 && width > 100 && width < 800 )
+            {
+                distance = sqrt( pow( pos_x / 100, 2 ) + pow( pos_y / 100, 2 ) );
+                if( distance < min_distance && distance > 0 )
+                {
+                    min_distance = distance;
+                    std::cout << "The distance from" << object.ActorName.Value() << " is"
+                              << min_distance << std::endl;
+                }
+            }
+        }
+        old_distance_ = distance_;
+        distance_ = min_distance;
+
+        if( distance_ == std::numeric_limits<double>::infinity() )
+        {
+            isCardAhead = false;
+        }
+        else
+        {
+            isCardAhead = true;
+        }
         return true;
     }
 
@@ -478,7 +524,6 @@ protected:
 
     void steeringControl_poly( Mat BEV_img_color )
     {
-
         vector<Point> center_lane_pts_pixel = right_lane.last_center_pts_pixel;
         if( center_lane_pts_pixel.empty() )
         {
@@ -507,18 +552,120 @@ protected:
                               steer_I_ * steer_error_I_;  // The output from PD controller
 
         // normalize the output between -1 and 1
-        steer_output_norm_ = steer_output / ( BEV_img_color.cols / 2.0 );
+        steer_output_norm_ = steer_output / ( 400 / 2.0 );
 
-		if( steer_output_norm_ < -1.0 )
+        if( steer_output_norm_ < -1.0 )
         {
-                    steer_output_norm_ = -1.0;
+            steer_output_norm_ = -1.0;
         }
         else if( steer_output_norm_ > 1.0 )
         {
             steer_output_norm_ = 1.0;
-		}
+        }
     }
 
+    /* Aufgabe4: throttle control*/
+    void throttleControl()
+    {
+        double velocity_compensation = distanceControl();
+        double velocity_of_front_car = speedEstimator();
+        if( !isCardAhead )  // car ahead
+        {
+            speedControl( max_velocity, 0 );
+        }
+        else if( isCardAhead && distance_ > min_distance )
+        {
+            speedControl( max_velocity, 0 );
+        }
+        else if( isCardAhead && distance_ <= min_distance )
+        {
+            speedControl( velocity_of_front_car, velocity_compensation );
+        }
+        else
+        {
+            speedControl( velocity_of_front_car, velocity_compensation );
+        }
+    }
+
+    void speedControl( double taget_velocity, double velocity_compensation )
+    {
+        controlMode = "Speed Controller";
+
+        double throttle_error_P = taget_velocity - ego_velocity_ + velocity_compensation;
+        throttle_error_I = throttle_error_I + throttle_error_old;
+        double throttle_error_D = throttle_error_P - throttle_error_old;
+
+        throttle_error_old = throttle_error_P;
+
+        double throttle_output = ( throttle_error_P * throttle_P + throttle_error_D * throttle_D +
+                                   throttle_error_I * throttle_I ) /
+                                 max_velocity;
+
+        throttle_output_norm_ = throttle_output;
+
+        if( throttle_output_norm_ > 1 )
+        {
+            throttle_output_norm_ = 1;
+        }
+        else if( throttle_output_norm_ < 0.2 )
+        {
+            throttle_output_norm_ = 0.2;
+        }
+
+        cout << "with speed controller, current throttle output is:" << throttle_output_norm_
+             << endl;
+        cout << "PID is " << throttle_error_P << "," << throttle_error_I << "," << throttle_error_D
+             << endl;
+    }
+
+    double distanceControl()
+    {
+        controlMode = "distance controller";
+        double distance_error_P = distance_ - min_distance;
+        double distance_error_D = distance_error_P - distance_error_old;
+        distance_error_I = distance_error_I + distance_error_old;
+
+        distance_error_old = distance_error_P;
+
+        double distance_output = distance_error_P * distance_P + distance_error_D * distance_D +
+                                 distance_error_I * distance_I;
+
+        /*throttle_output_norm_ = distance_output;
+        if( throttle_output_norm_ > 1 )
+        {
+            throttle_output_norm_ = 1;
+        }
+        else if( throttle_output_norm_ < 0 || ego_velocity_ > max_velocity )
+        {
+            throttle_output_norm_ = 0;
+        }
+        cout << "With distance controller, current throttle output is:" << throttle_output_norm_
+             << "=" << distance_error_P << " x " << distance_P << " + " << distance_error_I << " x "
+             << distance_I << "+" << distance_error_D << " x " << distance_D << endl;
+
+        saveToCSV();*/
+
+        return distance_output;
+    }
+
+    double speedEstimator()
+    {
+        double distance_gap = distance_ - old_distance_;
+        double speed_ahead_car = ego_velocity_ + distance_gap / 0.016666;
+        return speed_ahead_car;
+    }
+
+    void saveToCSV()
+    {
+        std::ofstream distanceData;
+        distanceData.open( "D:\\200_Projekte\\distanceData.csv", ios::app );
+        if( distance_ < std::numeric_limits<double>::infinity() && distance_ < 60 )
+        {
+            distanceData << to_string( distance_ ) << "," << to_string( throttle_output_norm_ )
+                         << endl;
+        }
+        distanceData.close();
+    }
     // Helper functions, no changes needed
 public:
     // Function to process received tronis data
@@ -569,9 +716,12 @@ public:
                     processPoseVelocity( data_model.get_typed<tronis::PoseVelocitySub>() );
                     break;
                 }
-                case tronis::TronisDataType::Object:
+                case tronis::TronisDataType::BoxData:
                 {
-                    processObject();
+                    processBoundingBox( data_model.get_typed<tronis::BoxDataSub>() );
+                    old_time = new_time;
+                    new_time = data_model->GetTime();
+
                     break;
                 }
                 default:
@@ -625,8 +775,7 @@ protected:
 
 // main loop opens socket and listens for incoming data
 
-
- int main( int argc, char** argv )
+int main( int argc, char** argv )
 {
     std::cout << "Welcome to lane assistant" << std::endl;
 
@@ -649,7 +798,6 @@ protected:
     {
         std::cout << "Wait for connection..." << std::endl;
         msg_grabber.open_str( socket_params.str() );
-
         if( !msg_grabber.isOpen() )
         {
             printf( "Failed to open grabber, retry...!\n" );
@@ -702,8 +850,8 @@ protected:
     }
     return 0;
 }
-//
-//int main( int argc, char** argv )
+
+// int main( int argc, char** argv )
 //{
 //    Mat original_img = imread( "c:\\users\\am3s33\\pictures\\camera roll\\lane4.png" );
 //    LaneAssistant laneassistant;
