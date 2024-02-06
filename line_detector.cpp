@@ -48,8 +48,8 @@ void line_dection_by_sliding_window( Mat img, Mat output_img, int number_of_wind
     int leftx_current = left_base;
     int rightx_current = right_base;
 
-    int margin = 80;  // width of the windows + / -margin
-    int minpix = 40;  // minimum number of pixels found to recenter window
+    int margin = 40;    // width of the windows + / -margin
+    int minpix = 300;  // minimum number of pixels found to recenter window
 
     vector<Point> left_lane_points, right_lane_points;
     cout << "Now in window.." << endl;
@@ -66,13 +66,13 @@ void line_dection_by_sliding_window( Mat img, Mat output_img, int number_of_wind
         int win_xright_low = rightx_current - margin;
         int win_xright_high = rightx_current + margin;
 
-        // draw the left window
-        cv::rectangle( img, Point( win_xleft_low, win_y_low ), Point( win_xleft_high, win_y_high ),
-                       Scalar( 255, 0, 0 ), 2 );
+        //// draw the left window
+        //cv::rectangle( img, Point( win_xleft_low, win_y_low ), Point( win_xleft_high, win_y_high ),
+        //               Scalar( 255, 0, 0 ), 2 );
 
-        // draw the right window
-        cv::rectangle( img, Point( win_xright_low, win_y_low ),
-                       Point( win_xright_high, win_y_high ), Scalar( 255, 0, 0 ), 2 );
+        //// draw the right window
+        //cv::rectangle( img, Point( win_xright_low, win_y_low ),
+        //               Point( win_xright_high, win_y_high ), Scalar( 255, 0, 0 ), 2 );
 
         std::vector<int> good_left_inds;
         std::vector<int> good_right_inds;
@@ -127,35 +127,69 @@ void line_dection_by_sliding_window( Mat img, Mat output_img, int number_of_wind
     cout << "Now in polyfit.." << endl;
 
     // polynomial line fit
-    if( !right_lane_points.empty() )
+    if( right_lane_points.size() > minpix )
     {
-        Mat right_fitted_coef = PolynomialFit( right_lane_points, 2 );
+        Mat right_fit_coeff = PolynomialFit( right_lane_points, 2 );
+
+		// Check if the coeff correctly
+        if( right_fit_coeff.at<double>( 0, 0 ) < 420 || right_fit_coeff.at<double>( 0, 0 ) > 550 )
+        {
+            right_fit_coeff = right_lane.last_fit_pixel;
+        }
+
+        right_lane_points.push_back( Point( 0, 0 ) );
         vector<Point> fitted_points =
-            computeFittedLinePoints( right_lane_points, right_fitted_coef, height );
+            computeFittedLinePoints( right_lane_points, right_fit_coeff, height );
 
         // Update lane data to class Lane
-        right_lane.last_fit_pixel = right_fitted_coef;
+        right_lane.last_fit_pixel = right_fit_coeff;
         right_lane.last_lane_points_pixel = fitted_points;
         right_lane.detected = true;
 
         cv::polylines( output_img, fitted_points, false, Scalar( 255, 0, 0 ), 10 );
 
-        cout << "right lines are detected by sliding windows" << endl;
+        cout << "right lines are detected by sliding windows, the number of pixel is"
+             << right_lane_points.size() << endl;
+    }
+    else
+    {
+        vector<Point> fitted_points = right_lane.last_lane_points_pixel;
+        cv::polylines( output_img, fitted_points, false, Scalar( 255, 0, 0 ), 10 );
+        right_lane.detected = false;
+        cout << "right lines are not detected, previous detection will be used." << endl;
     }
 
-    if( !left_lane_points.empty() )
+    if( left_lane_points.size() > minpix )
     {
-        Mat left_fitted_coef = PolynomialFit( left_lane_points, 2 );
+        Mat left_fit_coeff = PolynomialFit( left_lane_points, 2 );
+
+		// Check if the coeff correctly
+        if( left_fit_coeff.at<double>( 0, 0 ) < 195 || left_fit_coeff.at<double>( 0, 0 ) > 350 )
+        {
+            left_fit_coeff = left_lane.last_fit_pixel;
+        }
+
+		// Compute fitted Points
+        left_lane_points.push_back( Point( 0, 0 ) );
         vector<Point> fitted_points =
-            computeFittedLinePoints( right_lane_points, left_fitted_coef, height );
+            computeFittedLinePoints( left_lane_points, left_fit_coeff, height );
 
         // Update lane data to class Lane
-        left_lane.last_fit_pixel = left_fitted_coef;
+        left_lane.last_fit_pixel = left_fit_coeff;
         left_lane.last_lane_points_pixel = fitted_points;
         left_lane.detected = true;
 
         cv::polylines( output_img, fitted_points, false, Scalar( 0, 255, 0 ), 10 );
-        cout << "left lines are detected by sliding windows" << endl;
+        cout << "left lines are detected by sliding windows, the number of pixel is"
+             << left_lane_points.size() << endl;
+    }
+     
+    else
+    {
+        vector<Point> fitted_points = left_lane.last_lane_points_pixel;
+        cv::polylines( output_img, fitted_points, false, Scalar( 0, 255, 0 ), 10 );
+        left_lane.detected = false;
+        cout << "left lines are not detected, previous detection will be used." << endl;
     }
 
     // draw_histogram( histogram );
@@ -278,40 +312,6 @@ Mat birdEyeView_full( Mat binary_img )
 
     return BEV_img;
 }
-void draw_histogram( Mat histogram )
-{
-    // Create a black image to draw the histogram
-    int hist_h = 500;             // Height of the histogram image
-    int hist_w = histogram.cols;  // Width of the histogram image
-    Mat histImage( hist_h, hist_w, CV_8UC3, Scalar( 0, 0, 0 ) );
-
-    // Calculate the bin width
-    int bin_w = cvRound( (double)hist_w / histogram.rows );
-
-    // Find the maximum value in the histogram for normalization
-    double maxVal;
-    minMaxLoc( histogram, 0, &maxVal, 0, 0 );
-
-    // Normalize the histogram to fit the histImage height and draw each bin
-    for( int i = 0; i < histogram.cols; i++ )
-    {
-        float normalizedValue = ( histogram.at<float>( i ) / maxVal ) * hist_h;
-        circle( histImage, Point( i, hist_h - normalizedValue ), 3, Scalar( 255, 255, 255 ) );
-    }
-
-    // find the max point in right, left lanes
-    int midpoint = histogram.size().width / 2;
-
-    int left_base = std::distance(
-        histogram.begin<int>(),
-        std::max_element( histogram.begin<int>(), histogram.begin<int>() + midpoint ) );
-    int right_base = std::distance(
-        histogram.begin<int>(),
-        std::max_element( histogram.begin<int>() + midpoint, histogram.end<int>() ) );
-
-    float normalizedValue = ( histogram.at<float>( left_base ) / maxVal ) * hist_h;
-    circle( histImage, Point( left_base, hist_h - normalizedValue ), 15, Scalar( 0, 0, 255 ), 3 );
-}
 
 void line_detection_by_previous( Mat BEV_img, Mat output_img, int number_of_windows,
                                  Lane& left_lane, Lane& right_lane )
@@ -331,57 +331,77 @@ void line_detection_by_previous( Mat BEV_img, Mat output_img, int number_of_wind
     std::vector<cv::Point> nonzero_points;
     cv::findNonZero( binary_img, nonzero_points );
 
-    int margin = 80;
+    int margin = 30;
+    int minpix = 300;  // minimum number of pixels found to recenter window
 
     vector<int> left_lane_points_index, right_lane_points_index;
     vector<Point> left_lane_points, right_lane_points;
+
     /*
-    Using the polynomial calculated from the previous frame to create a search area, and determining
-    the position of the lane lines by comparing whether the points detected in the current frame are
-    within this search area, this method speeds up the search and enhances stability.
-        */
+Using the polynomial calculated from the previous frame to create a search area, and determining
+the position of the lane lines by comparing whether the points detected in the current frame are
+within this search area, this method speeds up the search and enhances stability.
+    */
+
     for( int i = 0; i < nonzero_points.size(); i++ )
     {
         int px = nonzero_points[i].x;
         int py = nonzero_points[i].y;
 
-        // point.y computed by prevous fitting coefficient
-        double py_pre_left = left_fit_coeff.at<double>( 0, 0 ) +
+        // point.x computed by prevous fitting coefficient
+        double px_pre_left = left_fit_coeff.at<double>( 0, 0 ) +
                              left_fit_coeff.at<double>( 1, 0 ) * py +
                              left_fit_coeff.at<double>( 2, 0 ) * py * py;
-        double py_pre_right = right_fit_coeff.at<double>( 0, 0 ) +
+        double px_pre_right = right_fit_coeff.at<double>( 0, 0 ) +
                               right_fit_coeff.at<double>( 1, 0 ) * py +
                               right_fit_coeff.at<double>( 2, 0 ) * py * py;
 
-        if( px > py_pre_left - margin && px < py_pre_left + margin )
+        if( px > px_pre_left - margin && px < px_pre_left + margin )
         {
             left_lane_points_index.push_back( i );
             left_lane_points.push_back( nonzero_points[i] );
+            //cout << "left lane have" << left_lane_points.size() << endl;
         }
 
-        if( px > py_pre_right - margin && px < py_pre_right + margin )
+        if( px > px_pre_right - margin && px < px_pre_right + margin )
         {
             right_lane_points_index.push_back( i );
             right_lane_points.push_back( nonzero_points[i] );
+            //cout << "right lane have" << right_lane_points.size() << endl;
         }
     }
 
     // Determining whether the lane is detected
-    if( left_lane_points_index.empty() )
+	// If lane is not detected or too less partly detected
+    if( left_lane_points_index.size() < minpix )
     {
         left_fit_coeff = left_lane.last_fit_pixel;
         left_lane.detected = false;
+    }
+
+	//if lane is not correctly detected
+    else if( left_fit_coeff.at<double>( 0, 0 ) < 180 || left_fit_coeff.at<double>( 0, 0 ) > 350 )
+    {
+        left_fit_coeff = left_lane.last_fit_pixel;
+        left_lane.detected = false;
+        cout << "left lane was not correctly detected." << endl;
+        cout << "coeff is: " << left_fit_coeff.at<double>( 0, 0 ) << ","
+             << left_fit_coeff.at<double>( 1, 0 ) << "," << left_fit_coeff.at<double>( 2, 0 )
+             << endl;
     }
     else
     {
         // compute new fitting coefficient
         left_fit_coeff = PolynomialFit( left_lane_points, 2 );
-
+        cout << "coeff is: " << left_fit_coeff.at<double>( 0, 0 ) << ","
+             << left_fit_coeff.at<double>( 1, 0 ) << "," << left_fit_coeff.at<double>( 2, 0 )
+             << endl;
         // update to the lane
         left_lane.last_fit_pixel = left_fit_coeff;
         left_lane.detected = true;
 
         // draw polyline to the image
+        left_lane_points.push_back( Point( 0, 0 ) );
         vector<Point> fitted_points =
             computeFittedLinePoints( left_lane_points, left_fit_coeff, height );
         cv::polylines( output_img, fitted_points, false, Scalar( 0, 255, 0 ), 10 );
@@ -390,21 +410,37 @@ void line_detection_by_previous( Mat BEV_img, Mat output_img, int number_of_wind
         cout << "Left lane is detected by previous detection. " << endl;
     }
 
-    if( right_lane_points_index.empty() )
+    // if right lane was not detected or detected pixel are too less
+    if( right_lane_points_index.size() <
+        minpix )  
     {
         right_fit_coeff = right_lane.last_fit_pixel;
         right_lane.detected = false;
+        cout << "right lane was not detected, minpix is:" << right_lane_points.size() << endl;
+    }
+    // if lane is not correctly detected
+    else if( right_fit_coeff.at<double>( 0, 0 ) < 400 || right_fit_coeff.at<double>( 0, 0 ) > 550 )
+    {
+        right_fit_coeff = right_lane.last_fit_pixel;
+        right_lane.detected = false;
+        cout << "right lane was not correctly detected."  << endl;
+        cout << "coeff is: " << right_fit_coeff.at<double>( 0, 0 ) << ","
+             << right_fit_coeff.at<double>( 1, 0 ) << "," << right_fit_coeff.at<double>( 2, 0 )
+             << endl;
     }
     else
     {
         // compute new fitting coefficient
         right_fit_coeff = PolynomialFit( right_lane_points, 2 );
-
+        cout << "coeff is: " << right_fit_coeff.at<double>( 0, 0 ) << ","
+             << right_fit_coeff.at<double>( 1, 0 ) << "," << right_fit_coeff.at<double>( 2, 0 )
+             << endl;
         // update to the lane
         right_lane.last_fit_pixel = right_fit_coeff;
         right_lane.detected = true;
 
         // draw polyline to the image
+        right_lane_points.push_back( Point( 0, 0 ) );
         vector<Point> fitted_points =
             computeFittedLinePoints( right_lane_points, right_fit_coeff, height );
         cv::polylines( output_img, fitted_points, false, Scalar( 255, 0, 0 ), 10 );
@@ -433,142 +469,127 @@ void draw_detected_lane_onto_road( Mat original_img, Lane& left_lane, Lane& righ
     Mat M = getPerspectiveTransform( src, dst );
     Mat Minv = getPerspectiveTransform( dst, src );
 
-    vector<Point> left_pts = left_lane.last_lane_points_pixel;
-    vector<Point> right_pts = right_lane.last_lane_points_pixel;
-
+    vector<Point> left_pts_pixel = left_lane.last_lane_points_pixel;
+    vector<Point> right_pts_pixel = right_lane.last_lane_points_pixel;
     vector<Point> center_pts_pixel;
 
-    // compute middle point of two lanes
-    for( int i = 0; i < image_height-1; i++ )
+    if( left_pts_pixel.size() == right_pts_pixel.size() )
     {
-        int px = static_cast<int>( ( left_pts[i].x + right_pts[i].x ) / 2 );
-        int py = left_pts[i].y;
-        center_pts_pixel.push_back( Point( px, py ) );
+        for( int i = 0; i < left_pts_pixel.size(); i++ )
+        {
+            int px = ( left_pts_pixel.at( i ).x + right_pts_pixel.at( i ).x ) / 2;
+            int py = left_pts_pixel.at( i ).y;
+            center_pts_pixel.push_back( Point( px, py ) );
+        }
     }
+    vector<Point> left_pts_meter =
+        applyPerspectiveTransform( left_lane.last_lane_points_pixel, Minv );
+    vector<Point> right_pts_meter =
+        applyPerspectiveTransform( right_lane.last_lane_points_pixel, Minv );
+    vector<Point> center_pts_meter = applyPerspectiveTransform( center_pts_pixel, Minv );
 
+    // update lane points in meter
+    left_lane.last_lane_points_meter = left_pts_meter;
+    right_lane.last_lane_points_meter = right_pts_meter;
     right_lane.last_center_pts_pixel = center_pts_pixel;
-    
-    // convert vector<Point> to Mat
-    Mat pointsMat_left = Mat::zeros( original_img.size(), CV_8UC1 );
-    Mat pointsMat_right = Mat::zeros( original_img.size(), CV_8UC1 );
-    Mat pointsMat_center = Mat::zeros( original_img.size(), CV_8UC1 );
 
-    // draw left,right lane of BEV in mask
-    cv::polylines( pointsMat_left, left_pts, false, Scalar( 255, 0, 0 ), 8 );
-    cv::polylines( pointsMat_right, right_pts, false, Scalar( 255, 0, 0 ), 8 );
-    cv::polylines( pointsMat_center, center_pts_pixel, false, Scalar( 255, 0, 0 ), 8 );
+    //// change the Reihefolge der Points
+    // std::reverse( inv_right_pts.begin(), inv_right_pts.end() );
 
-    // convert left,right lane from BEV to real world
-    Mat inv_BEV_img_left, inv_BEV_img_right, inv_BEV_img_center;
-    warpPerspective( pointsMat_left, inv_BEV_img_left, Minv, Size( image_width, image_height ) );
-    warpPerspective( pointsMat_right, inv_BEV_img_right, Minv, Size( image_width, image_height ) );
-    warpPerspective( pointsMat_center, inv_BEV_img_center, Minv,
-                     Size( image_width, image_height ) );
+    //// create bottom line points
+    // vector<Point> bottom_point;
+    // for( int i = 0; i < image_width; i++ )
+    //{
+    //    bottom_point.push_back( Point( i, image_height ) );
+    //}
 
-    // get left,right lane points
-    vector<Point> inv_left_pts, inv_right_pts, inv_center_pts;
-    findNonZero( inv_BEV_img_left, inv_left_pts );
-    findNonZero( inv_BEV_img_right, inv_right_pts );
-    findNonZero( inv_BEV_img_center, inv_center_pts );
+    //// create right edge points
+    // vector<Point> right_edge_pts;
+    // for( int i = inv_right_pts.front().y; i < image_height; i++ )
+    //{
+    //    right_edge_pts.push_back( Point( image_width, i ) );
+    //}
 
-    // polyfit in real world
-    Mat left_fit_meter = PolynomialFit( inv_left_pts, 2 );
-    Mat right_fit_meter = PolynomialFit( inv_right_pts, 2 );
-    Mat center_fit_meter = PolynomialFit( inv_center_pts, 2 );
+    //// create left edge points
+    // vector<Point> left_edge_pts;
+    // for( int i = inv_left_pts.back().y; i < image_height; i++ )
+    //{
+    //    left_edge_pts.push_back( Point( 0, i ) );
+    //}
 
-    // new left, right lane points
-    inv_left_pts = computeFittedLinePoints( inv_left_pts, left_fit_meter, image_height );
-    inv_right_pts = computeFittedLinePoints( inv_right_pts, right_fit_meter, image_height );
-    inv_center_pts = computeFittedLinePoints( inv_center_pts, center_fit_meter, image_height );
+    //// create top line points
+    // vector<Point> top_edge_pts;
+    // Point p1 = inv_right_pts.back();
+    // Point p2 = inv_left_pts.front();
+    // int dx = abs( p2.x - p1.x ), sx = p1.x < p2.x ? 1 : -1;
+    // int dy = -abs( p2.y - p1.y ), sy = p1.y < p2.y ? 1 : -1;
+    // int err = dx + dy, e2;
 
-    // update left,right lane in meter into class Lane
-    right_lane.last_lane_points_meter = inv_right_pts;
-    left_lane.last_lane_points_meter = inv_left_pts;
-    right_lane.last_center_pts_meter = inv_center_pts;
+    // while( true )
+    //{
+    //    top_edge_pts.push_back( p1 );
+    //    if( p1.x == p2.x && p1.y == p2.y )
+    //        break;
+    //    e2 = 2 * err;
+    //    if( e2 >= dy )
+    //    {
+    //        err += dy;
+    //        p1.x += sx;
+    //    }
+    //    if( e2 <= dx )
+    //    {
+    //        err += dx;
+    //        p1.y += sy;
+    //    }
+    //}
 
-    // change the Reihefolge der Points
-    std::reverse( inv_right_pts.begin(), inv_right_pts.end() );
+    //// merge all lines
+    // vector<vector<Point>> polygon;
+    // vector<Point> pts;
+    // pts.insert( pts.begin(), inv_left_pts.begin(), inv_left_pts.end() );
+    // pts.insert( pts.end(), left_edge_pts.begin(), left_edge_pts.end() );
+    // pts.insert( pts.end(), bottom_point.begin(), bottom_point.end() );
+    // pts.insert( pts.end(), right_edge_pts.begin(), right_edge_pts.end() );
+    // pts.insert( pts.end(), inv_right_pts.begin(), inv_right_pts.end() );
+    // pts.insert( pts.end(), top_edge_pts.begin(), top_edge_pts.end() );
 
-    // create bottom line points
-    vector<Point> bottom_point;
-    for( int i = 0; i < image_width; i++ )
-    {
-        bottom_point.push_back( Point( i, image_height ) );
-    }
+    // polygon.push_back( pts );
 
-    // create right edge points
-    vector<Point> right_edge_pts;
-    for( int i = inv_right_pts.front().y; i < image_height; i++ )
-    {
-        right_edge_pts.push_back( Point( image_width, i ) );
-    }
+    // Mat mask_fill( original_img.size(), original_img.type() );
+    // fillPoly( mask_fill, polygon, Scalar( 127, 236, 155 ) );
 
-    // create left edge points
-    vector<Point> left_edge_pts;
-    for( int i = inv_left_pts.back().y; i < image_height; i++ )
-    {
-        left_edge_pts.push_back( Point( 0, i ) );
-    }
-
-    // create top line points
-    vector<Point> top_edge_pts;
-    Point p1 = inv_right_pts.back();
-    Point p2 = inv_left_pts.front();
-    int dx = abs( p2.x - p1.x ), sx = p1.x < p2.x ? 1 : -1;
-    int dy = -abs( p2.y - p1.y ), sy = p1.y < p2.y ? 1 : -1;
-    int err = dx + dy, e2;
-
-    while( true )
-    {
-        top_edge_pts.push_back( p1 );
-        if( p1.x == p2.x && p1.y == p2.y )
-            break;
-        e2 = 2 * err;
-        if( e2 >= dy )
-        {
-            err += dy;
-            p1.x += sx;
-        }
-        if( e2 <= dx )
-        {
-            err += dx;
-            p1.y += sy;
-        }
-    }
-
-    // merge all lines
-
-    vector<vector<Point>> polygon;
-    vector<Point> pts;
-    pts.insert( pts.begin(), inv_left_pts.begin(), inv_left_pts.end() );
-    pts.insert( pts.end(), left_edge_pts.begin(), left_edge_pts.end() );
-    pts.insert( pts.end(), bottom_point.begin(), bottom_point.end() );
-    pts.insert( pts.end(), right_edge_pts.begin(), right_edge_pts.end() );
-    pts.insert( pts.end(), inv_right_pts.begin(), inv_right_pts.end() );
-    pts.insert( pts.end(), top_edge_pts.begin(), top_edge_pts.end() );
-
-    polygon.push_back( pts );
-
-    Mat mask_fill( original_img.size(), original_img.type() );
-    fillPoly( mask_fill, polygon, Scalar( 127, 236, 155 ) );
+    // cv::addWeighted( original_img, 1, mask_fill, 0.3, 0.0, original_img );
 
     // draw left, right lane to original image(real road)
-    cv::polylines( original_img, inv_left_pts, false, Scalar( 255, 0, 0 ), 8 );
-    cv::polylines( original_img, inv_right_pts, false, Scalar( 0, 255, 0 ), 8 );
-
-    cv::addWeighted( original_img, 1, mask_fill, 0.3, 0.0, original_img );
+    cv::polylines( original_img, left_pts_meter, false, Scalar( 255, 0, 0 ), 8 );
+    cv::polylines( original_img, right_pts_meter, false, Scalar( 0, 255, 0 ), 8 );
+    cv::polylines( original_img, center_pts_meter, false, Scalar( 246, 161, 75 ), 5 );
 }
 
-void get_center_of_road( Mat detected_lane_img_meter, Mat detected_lane_img_BEV, Lane& left_lane,
-                         Lane& right_lane )
+vector<Point> applyPerspectiveTransform( const vector<Point>& inputPoints,
+                                         const Mat& transformationMatrix )
 {
-    if( right_lane.last_center_pts_meter.empty() )
+    // coonvert integer to float point
+    vector<Point2f> inputPointsFloat;
+    inputPointsFloat.reserve( inputPoints.size() );
+    for( const Point& p : inputPoints )
     {
-        return;
+        inputPointsFloat.push_back(
+            Point2f( static_cast<float>( p.x ), static_cast<float>( p.y ) ) );
     }
-    polylines( detected_lane_img_meter, right_lane.last_center_pts_meter, false,
-               Scalar( 128, 128, 128 ), 5 );
 
-    polylines( detected_lane_img_BEV, right_lane.last_center_pts_pixel, false,
-               Scalar( 128, 128, 128 ), 5 );
+    // perspective transform apply
+    vector<Point2f> transformedPointsFloat;
+    cv::perspectiveTransform( inputPointsFloat, transformedPointsFloat, transformationMatrix );
+
+    // convert float to integer
+    vector<Point> transformedPoints;
+    transformedPoints.reserve( transformedPointsFloat.size() );
+    for( const Point2f& pt : transformedPointsFloat )
+    {
+        transformedPoints.push_back( Point( cvRound( pt.x ), cvRound( pt.y ) ) );
+    }
+
+    return transformedPoints;
 }
+
