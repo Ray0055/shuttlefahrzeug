@@ -2,6 +2,10 @@
 #include <fstream>
 #include <string>
 #include <random>
+#include <future>
+#include <functional>
+#include <chrono>
+#include <map>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 
@@ -26,8 +30,8 @@ public:
     {
         string control_cmd = std::to_string( steer_output_norm_ ) + ";" +
                              std::to_string( throttle_output_norm_ ) + ";" +
-                             std::to_string( isCardAhead ) + ";" + formatDouble( distance_ ) + ";" +
-                             formatDouble( velocity_front_car_ );
+                             std::to_string( isCardAhead ) + ";" + formatDouble( distance_ );
+                             
         socket.send( tronis::SocketData( control_cmd ) );
 
         return true;
@@ -38,48 +42,6 @@ public:
         original_image_ = img;
         image_ = img;
         detectLanes();
-    }
-
-    void processImage_2( Mat img )
-    {
-        image_ = img;
-        original_image_ = img;
-        regionDetection( image_ );
-        Mat BEV_img_color = birdEyeView_fullscreen( image_, true );
-
-        colorDetection( image_ );
-
-        BEV_image_ = birdEyeView_fullscreen( image_, true );
-
-        if( right_lane.detected && left_lane.detected )
-        {
-            line_detection_by_previous( BEV_image_, BEV_img_color, 9, left_lane, right_lane );
-        }
-        else
-        {
-            line_dection_by_sliding_window( BEV_image_, BEV_img_color, 9, left_lane, right_lane );
-        }
-
-        draw_detected_lane_onto_road( original_image_, left_lane, right_lane );
-        // get_center_of_road( original_image_, BEV_img_color, left_lane, right_lane );
-        steeringControl_poly( BEV_img_color );
-        cv::putText( BEV_img_color, "Steering:" + to_string( steer_output_norm_ ), Point( 300, 45 ),
-                     FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );
-        imshow( "BEV_img_color", BEV_img_color );
-        imshow( "output", original_image_ );
-        waitKey( 0 );
-    }
-
-    void stopLineDetectionMethod( Mat img )
-    {
-        image_ = img;
-        original_image_ = img;
-        isRedLightPresent( image_ );
-
-        // isStopLanePresent( image_ );
-
-        cout << "isStopLanePresent: " << is_stop_lane_present_ << ", "
-             << "isRedLightPresent: " << red_stop_sign_ << endl;
     }
 
 protected:
@@ -101,12 +63,12 @@ protected:
     Lane right_lane, left_lane;
 
     // Stop Sign and Stop Lane Detection
-    bool red_stop_sign_ = false;
+    bool is_red_sign_present_ = false;
     bool is_stop_lane_present_ = false;
-    bool isBrake_ = false;  // need to brake or not
-    bool isStop_ = false;   // check if the car has stopped for duration
-    bool isWaiting = false;
-
+    bool shouldBrake_ = false;    // need to brake or not
+    bool isStopHandled_ = false;  // check if the car has stopped for duration
+    std::chrono::steady_clock::time_point startTime_;
+    std::chrono::steady_clock::time_point currentTime_;
     // hyperparameter of steering PID controller
     double steer_output_norm_ = 0.0;
     double steer_P_ = 1.7;
@@ -128,25 +90,25 @@ protected:
 
     // Initialize distance PID controller and parameters
     bool isCardAhead;
-    double distance_;
-    double velocity_front_car_;
-    double old_distance_;
-    double min_distance = 30;  // min safe car-car distance
+    double distance_ = std::numeric_limits<double>::infinity();
+    double min_safe_distance_ = 30;  // min safe car-car distance
+    double max_detected_distance_ = 60.0;
     double distance_P = 1.5;
     double distance_I = 15 / 1e6;
     double distance_D = 0.0003;
     double distance_error_old = 0;
     double distance_error_I = 0;
 
-    double new_time;
-    double old_time;
+    std::map<std::string, int> rightLaneVehicle;
+    std::map<std::string, int> leftLaneVehicle;
+
+    
     // Function to detect lanes based on camera image
     // Insert your algorithm here
     void detectLanes()
     {
         is_stop_lane_present_ = true;
-        red_stop_sign_ = false;
-        // isRedLightPresent( image_ );
+        isRedLightPresent( image_ );
 
         cv::Mat region_of_interest = regionDetection( image_ );
 
@@ -165,60 +127,6 @@ protected:
                       Point( 300, 45 ), FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );*/
         throttleControl();
         saveToCSV();
-    }
-
-    void detectLanes_poly()
-    {
-        // isRedLightPresent( image_ );
-
-        regionDetection( image_ );
-        Mat BEV_img_color = birdEyeView_fullscreen( image_, true );
-
-        Mat image_color_detected = colorDetection( image_ );
-        cv::imshow( "image_color_detected", image_color_detected );
-
-        // edgeDetection( image_color_detected );
-        // isStopLanePresent( image_ );
-        is_stop_lane_present_ = true;
-        Mat edge_detected_image = edgeDetectionPoly( image_color_detected );
-        BEV_image_ = birdEyeView_fullscreen( edge_detected_image, true );
-        cv::imshow( "BEV_image", BEV_image_ );
-        if( right_lane.detected && left_lane.detected )
-        {
-            line_detection_by_previous( BEV_image_, BEV_img_color, 9, left_lane, right_lane );
-        }
-        else
-        {
-            line_dection_by_sliding_window( BEV_image_, BEV_img_color, 9, left_lane, right_lane );
-        }
-
-        if( !right_lane.last_lane_points_pixel.empty() &&
-            !left_lane.last_lane_points_pixel.empty() )
-        {
-            draw_detected_lane_onto_road( original_image_, left_lane, right_lane );
-        }
-
-        steeringControl_poly( BEV_img_color );
-
-        cv::polylines( BEV_img_color, right_lane.last_center_pts_pixel, false,
-                       Scalar( 246, 161, 75 ), 5 );
-
-        BEV_image_ = BEV_img_color;
-
-        throttleControl();
-        // throttle_output_norm_ = 0.0;
-        if( isCardAhead )
-        {
-            velocity_front_car_ = speedEstimator();
-            /*cv::putText(
-                BEV_img_color,
-                "Velocity of the front car:" + to_string( std::round( speed * 100 ) / 100 ),
-                Point( 300, 245 ), FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );
-
-                        cv::putText( BEV_img_color,
-                         "Distance:" + to_string( std::round( distance_ * 100 ) / 100 ),
-                         Point( 300, 145 ), FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );*/
-        }
     }
 
     /* Aufgabe2: Lane Detection*/
@@ -336,18 +244,6 @@ protected:
         cv::Canny( image, grad_img, 100, 200 );
 
         // cout << " Edge is detected." << endl;
-        return grad_img;
-    }
-
-    cv::Mat edgeDetectionPoly( cv::Mat image )
-    {
-        cv::Mat grad_img, blurred_img;
-
-        // Canny Edge Detector
-        cv::GaussianBlur( image, blurred_img, cv::Size( 3, 3 ), 20, 0, cv::BORDER_DEFAULT );
-
-        cv::Canny( image, grad_img, 50, 200 );
-
         return grad_img;
     }
 
@@ -472,88 +368,7 @@ protected:
         }
     }
 
-    void laneDetectionRobust( vector<Point> lane, string lane_name )
-    {
-        vector<double>* lane_slope_history_ptr = nullptr;
-        vector<double>* lane_bias_history_ptr = nullptr;
-
-        if( lane_name == "r" )
-        {
-            lane_slope_history_ptr = &right_lane_slope_history_;
-            lane_bias_history_ptr = &right_lane_bias_history;
-        }
-        else
-        {
-            lane_slope_history_ptr = &left_lane_slope_history_;
-            lane_bias_history_ptr = &left_lane_bias_history;
-        }
-
-        // Define slope and bias
-        double slope = static_cast<double>( lane.at( 1 ).y - lane.at( 0 ).y ) /
-                       ( lane.at( 1 ).x - lane.at( 0 ).x );
-
-        double bias = static_cast<double>( lane.at( 1 ).y - slope * lane.at( 1 ).x );
-
-        // Fill slope and bias history vector
-        if( lane_slope_history_ptr->size() < 10 )
-        {
-            lane_slope_history_ptr->push_back( slope );
-            lane_bias_history_ptr->push_back( bias );
-        }
-        // When have enough slope and bias history
-        else
-        {
-            double slope_sum = std::accumulate( lane_slope_history_ptr->begin(),
-                                                lane_slope_history_ptr->end(), 0.0 );
-            double slope_mean = slope_sum / lane_slope_history_ptr->size();
-
-            double bias_sum = std::accumulate( lane_bias_history_ptr->begin(),
-                                               lane_bias_history_ptr->end(), 0.0 );
-            double bias_mean = bias_sum / lane_bias_history_ptr->size();
-
-            // If current slope is close to slope mean
-            if( std::abs( slope - slope_mean ) < 0.1 )
-            {
-                lane_slope_history_ptr->erase( lane_slope_history_ptr->begin() );
-                lane_slope_history_ptr->push_back( slope );
-                slope_sum = std::accumulate( lane_slope_history_ptr->begin(),
-                                             lane_slope_history_ptr->end(), 0.0 );
-                slope_mean = slope_sum / lane_slope_history_ptr->size();
-            }
-
-            // If current bias is close to bias mean
-            if( std::abs( bias - bias_mean ) < 10 )
-            {
-                lane_bias_history_ptr->erase( lane_bias_history_ptr->begin() );
-                lane_bias_history_ptr->push_back( bias );
-                bias_sum = std::accumulate( lane_bias_history_ptr->begin(),
-                                            lane_bias_history_ptr->end(), 0.0 );
-                bias_mean = bias_sum / lane_bias_history_ptr->size();
-            }
-
-            /*for( auto bias : left_lane_bias_history )
-            {
-                cout << bias << ",";
-                        }*/
-            /*cout << endl;
-            cout << "bias mean of history is: " << bias_mean << ", "
-                 << "current bias mean is: " << bias << endl;
-
-            cout << "slope mean of history is: " << slope_mean << ", "
-                 << "current slope mean is: " << slope << endl;*/
-
-            if( lane_name == "r" )
-            {
-                right_lane_.at( 1 ).x = ( right_lane_.at( 1 ).y - bias_mean ) / slope_mean;
-            }
-            else
-            {
-                left_lane_.at( 1 ).x = ( left_lane_.at( 1 ).y - bias_mean ) / slope_mean;
-            }
-        }
-    }
-
-    /*Use fitLine() function to merge all line which point to same direction to one line*/
+    // Use fitLine() function to merge all line which point to same direction to one line
     vector<Point> mergeLines( const vector<Point>& points, int img_height )
     {
         Vec4f line_parameters;
@@ -593,7 +408,7 @@ protected:
         return lane_points;
     }
 
-    /* Stop Lane Detection*/
+    // Stop Lane Detection
     // void isStopLanePresent( Mat img )
     //{
     //    std::vector<Vec4i> lines;
@@ -626,7 +441,7 @@ protected:
     //    }
     //}
 
-    /* Red Sign Detection*/
+    // Red Sign Detection
     void isRedLightPresent( cv::Mat img )
     {
         cv::Mat image8U;
@@ -678,12 +493,12 @@ protected:
         {
             // cv::imshow( "Red Mask", mask_red );
             // cv::waitKey( 0 );  // 0 means wait for any key press
-            red_stop_sign_ = true;
+            is_red_sign_present_ = true;
             return;
         }
         else
         {
-            red_stop_sign_ = false;
+            is_red_sign_present_ = false;
 
             return;
         }
@@ -733,48 +548,6 @@ protected:
         }
     }
 
-    void steeringControl_poly( Mat BEV_img_color )
-    {
-        vector<Point> center_lane_pts_pixel = right_lane.last_center_pts_pixel;
-        if( center_lane_pts_pixel.empty() )
-        {
-            return;
-        }
-
-        // Use PID controller to control steering
-        Point middle_point = center_lane_pts_pixel.back();
-        double target_point = middle_point.x;
-        double curr_point = BEV_img_color.cols / 2;
-        int height = BEV_img_color.rows;
-
-        // draw the target driving direction
-        line( BEV_img_color, Point( curr_point, height - 1 ), middle_point, Scalar( 0, 0, 255 ),
-              5 );
-
-        double steer_error_P =
-            target_point - curr_point;  // current steering error = the difference between target
-                                        // position and current position
-        double steer_erro_D =
-            steer_error_P - steer_error_old_;  // The rate of change of the error = the difference
-                                               // between current steering error and before
-        steer_error_old_ = steer_error_P;
-        steer_error_I_ = steer_error_I_ + steer_error_P;
-        double steer_output = steer_error_P * steer_P_ + steer_erro_D * steer_D_ +
-                              steer_I_ * steer_error_I_;  // The output from PD controller
-
-        // normalize the output between -1 and 1
-        steer_output_norm_ = steer_output / ( 400 / 2.0 );
-
-        if( steer_output_norm_ < -1.0 )
-        {
-            steer_output_norm_ = -1.0;
-        }
-        else if( steer_output_norm_ > 1.0 )
-        {
-            steer_output_norm_ = 1.0;
-        }
-    }
-
     /* Aufgabe4: throttle control*/
     bool processPoseVelocity( tronis::PoseVelocitySub* msg )
     {
@@ -786,7 +559,7 @@ protected:
 
     bool processBoundingBox( tronis::BoxDataSub* sensorData )
     {
-        double min_distance = 100;
+        double min_distance = std::numeric_limits<double>::infinity();
         double distance;
 
         // Sensor may detect several objects, all objects should be processed
@@ -803,7 +576,8 @@ protected:
             float width = extends.Y;
             float height = extends.Z;
 
-            float angle = std::atan( pos_y / pos_x );
+            string vehicle_name = object.ActorName.Value();
+
             // filter detected cars size
             distance = sqrt( pow( pos_x / 100, 2 ) + pow( pos_y / 100, 2 ) );
             /*std::cout << "The distance from" << object.ActorName.Value() << " is" << distance
@@ -817,25 +591,55 @@ protected:
                 if( pos_x != 0.0 )
                 {
                     // filter detected cars which in other lane
-                    if( std::abs( pos_y ) < 2000 )
+                    distance = sqrt( pow( pos_x / 100, 2 ) + pow( pos_y / 100, 2 ) );
+                  /*  cout << " rightLaneVehicle.count( " << vehicle_name
+                         << " )= " << rightLaneVehicle.count( vehicle_name )
+                         << " leftLaneVehicle.count( " << vehicle_name
+                         << " )= " << leftLaneVehicle.count( vehicle_name ) << "pos_y = " << pos_y
+                         << endl;*/
+
+                    // if it's first time to detect this car
+                    if( rightLaneVehicle.count( vehicle_name ) == 0 &&
+                        leftLaneVehicle.count( vehicle_name ) == 0 )
                     {
-                        distance = sqrt( pow( pos_x / 100, 2 ) + pow( pos_y / 100, 2 ) );
-                        if( distance < min_distance && distance > 0 )
+                        if( std::abs( pos_y ) < 400.0 )
                         {
-                            min_distance = distance;
-                            /* std::cout << "The distance from" << object.ActorName.Value() << " is"
-                                       << min_distance << std::endl;
-                             cout << "length of object is:" << length << ", width is " << width
-                                  << endl;*/
+                            rightLaneVehicle[vehicle_name] = distance;
+                            distance_ = distance;
+
+                            cout << vehicle_name
+                                 << "is in right lane, distance from it = " << distance << endl;
+                        }
+                        else
+                        {
+                            leftLaneVehicle[vehicle_name] = distance;
+                            cout << vehicle_name
+                                 << "is in left lane, distance from it = " << distance << endl;
+                        }
+                    }
+                    // The car has been detected
+                    else
+                    {
+                        if( rightLaneVehicle.count( vehicle_name ) > 0 )
+                        {
+                            rightLaneVehicle[vehicle_name] = distance;
+                            distance_ = distance;
+
+                            cout << vehicle_name
+                                 << "is in right lane, distance from it = " << distance << endl;
+                        }
+                        else
+                        {
+                            leftLaneVehicle[vehicle_name] = distance;
+                            cout << vehicle_name
+                                 << "is in left lane, distance from it = " << distance << endl;
                         }
                     }
                 }
             }
         }
-        old_distance_ = distance_;
-        distance_ = min_distance;
 
-        if( distance_ >= 100 )
+        if( distance_ >= max_detected_distance_ )
         {
             isCardAhead = false;
         }
@@ -848,23 +652,19 @@ protected:
 
     void throttleControl()
     {
-        // double velocity_compensation = distanceControl();
-        double velocity_of_front_car = speedEstimator();
-
         cout << "isStopLanePresent: " << is_stop_lane_present_ << ", "
-             << "isRedLightPresent: " << red_stop_sign_ << ","
-             << "isStop:" << isStop_ << endl;
+             << "isRedLightPresent: " << is_red_sign_present_ << ","
+             << "isStop:" << isStopHandled_ << endl;
 
         // Brake Assistant
-        if( red_stop_sign_ == true && is_stop_lane_present_ == true &&
-            isStop_ == false )  // detect red stop sign and car is not stopped
+        if( is_red_sign_present_ == true && is_stop_lane_present_ == true && !isStopHandled_ )
         {
-            cout << "red is present, shoule brake!" << endl;
+            // cout << "red is present, shoule brake!" << endl;
 
             if( ego_velocity_ < 1 )  // check if the car stop already or not
             {
-                cout << "current ego velocity is:" << ego_velocity_ << endl;
                 stopCarForDuration( std::chrono::seconds( 3 ) );
+                isStopHandled_ = true;
             }
             else
             {
@@ -873,14 +673,13 @@ protected:
 
             return;
         }
-        else if( red_stop_sign_ == true && is_stop_lane_present_ == true &&
-                 isStop_ == true )  // detect red stop sign and car is  stopped
+        else if( isStopHandled_ )
         {
-            isBrake_ = false;
-        }
-        else
-        {
-            isBrake_ = false;
+            currentTime_ = std::chrono::high_resolution_clock::now();
+            if( currentTime_ - startTime_ > std::chrono::seconds( 5 ) )
+            {
+                isStopHandled_ = false;
+            }
         }
 
         // Throttle Control
@@ -930,7 +729,7 @@ protected:
 
     void speedControl( double target_velocity )
     {
-        double throttle_error_P = target_velocity - ego_velocity_ ;
+        double throttle_error_P = target_velocity - ego_velocity_;
         throttle_error_I = throttle_error_I + throttle_error_old;
         double throttle_error_D = throttle_error_old - throttle_error_P;
 
@@ -942,7 +741,7 @@ protected:
         throttle_output_norm_ = std::min( throttle_output, 1.0 );
 
         // Avoid over maximum velocity
-        if( ego_velocity_ > max_velocity +5 && !isCardAhead )
+        if( ego_velocity_ > max_velocity && !isCardAhead )
         {
             throttle_output_norm_ = 0.6;
         }
@@ -950,15 +749,6 @@ protected:
         cout << "Speed PID is P = " << throttle_error_P << ", I = " << throttle_error_I
              << ", D =" << throttle_error_D << endl;
         cout << "Throttle output = " << throttle_output_norm_ << endl;
-    }
-
-    std::string formatDouble( double value )
-    {
-        std::ostringstream streamObj;
-        streamObj << std::fixed;
-        streamObj << std::setprecision( 2 );
-        streamObj << value;
-        return streamObj.str();
     }
 
     void distanceControl()
@@ -987,7 +777,7 @@ protected:
         else if( velocity_target > max_velocity )
         {
             velocity_target = max_velocity;
-		}
+        }
 
         speedControl( velocity_target );
         cout << "distance PID Controller: P = " << distance_error_P << ", I = " << distance_error_I
@@ -996,29 +786,19 @@ protected:
              << ", distance = " << distance_ << endl;
     }
 
-    double speedEstimator()
-    {
-        double distance_gap = distance_ - old_distance_;
-        double speed_ahead_car = ego_velocity_ + distance_gap / 0.016666;
-        return speed_ahead_car;
-    }
-
     void stopCarForDuration( std::chrono::seconds duration )
     {
-        auto startTime = std::chrono::high_resolution_clock ::now();
+        startTime_ = std::chrono::high_resolution_clock ::now();
 
-        isWaiting = true;
-        while( isWaiting )
+        while( true )
         {
             throttle_output_norm_ = 0;
-            auto currentTime = std::chrono::high_resolution_clock::now();
-            std::chrono::duration<double> diff = currentTime - startTime;
+            currentTime_ = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = currentTime_ - startTime_;
             if( diff > duration )
             {
                 cout << "diff is: " << diff.count() << endl;
-                isWaiting = false;
-                isBrake_ = false;
-                isStop_ = true;
+                break;
             }
         }
     }
@@ -1034,6 +814,15 @@ protected:
         }
 
         distanceData.close();
+    }
+
+    std::string formatDouble( double value )
+    {
+        std::ostringstream streamObj;
+        streamObj << std::fixed;
+        streamObj << std::setprecision( 2 );
+        streamObj << value;
+        return streamObj.str();
     }
 
 public:
@@ -1101,9 +890,6 @@ public:
                 case tronis::TronisDataType::BoxData:
                 {
                     processBoundingBox( data_model.get_typed<tronis::BoxDataSub>() );
-                    old_time = new_time;
-                    new_time = data_model->GetTime();
-
                     break;
                 }
                 default:
@@ -1156,6 +942,8 @@ protected:
 
 int main( int argc, char** argv )
 {
+    std::ofstream logout( " logout.txt " );
+    std::cout.rdbuf( logout.rdbuf() );
     std::cout << "Welcome to lane assistant" << std::endl;
 
     // specify socket parameters
@@ -1173,6 +961,7 @@ int main( int argc, char** argv )
 
     LaneAssistant lane_assistant;
     lane_assistant.initialCSV();
+
     while( key_press != 'q' )
     {
         std::cout << "Wait for connection..." << std::endl;
