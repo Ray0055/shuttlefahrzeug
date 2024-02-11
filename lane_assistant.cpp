@@ -33,24 +33,11 @@ public:
         return true;
     }
 
-    void processImage( cv::Mat image )
+    void processImage( cv::Mat img )
     {
-        image_ = image;
-        original_image_ = image;
-        regionDetection( image_ );
-
-        colorDetection( image_ );
-
-        edgeDetection( image_ );
-
-        lineDetection( image_ );
-
-        BEV_image_ = birdEyeView( image_, true );
-
-        steeringControl( original_image_ );
-        showImage( "original image", original_image_ );
-        showImage( "BEV_image_", BEV_image_ );
-        waitKey( 0 );
+        original_image_ = img;
+        image_ = img;
+        detectLanes();
     }
 
     void processImage_2( Mat img )
@@ -88,49 +75,53 @@ public:
         image_ = img;
         original_image_ = img;
         isRedLightPresent( image_ );
-        regionDetection( image_ );
 
-        Mat img_color_detected = colorDetection( image_ );
+        // isStopLanePresent( image_ );
 
-        edgeDetection( img_color_detected );
-
-        isStopLanePresent( image_ );
-
-        cout << "isStopLanePresent: " << stop_lane_ << ", "
+        cout << "isStopLanePresent: " << is_stop_lane_present_ << ", "
              << "isRedLightPresent: " << red_stop_sign_ << endl;
     }
 
 protected:
+    // Image
     std::string image_name_;
     cv::Mat image_, original_image_, BEV_image_;
+
+    // Ego Vehicle
     tronis::LocationSub ego_location_;
     tronis::OrientationSub ego_orientation_;
     double ego_velocity_;
-    vector<Point> left_lane_, right_lane_;
-    double steer_output_norm_, throttle_output_norm_;
+
+    // Lane Detection
+    vector<Point> left_lane_, right_lane_, stop_lane_;
+    vector<double> left_lane_slope_history_, right_lane_slope_history_;
+    vector<double> left_lane_bias_history, right_lane_bias_history;
+    Mat left_lane_coeff_, right_lane_coeff_, stop_lane_coeff;
     int processed_frames = 0;
     Lane right_lane, left_lane;
 
     // Stop Sign and Stop Lane Detection
     bool red_stop_sign_ = false;
-    bool stop_lane_ = false;
+    bool is_stop_lane_present_ = false;
     bool isBrake_ = false;  // need to brake or not
     bool isStop_ = false;   // check if the car has stopped for duration
     bool isWaiting = false;
-    // hyperparameter of PID controller
-    double steer_P_ = 2.0;
-    double steer_D_ = 0.0000;
+
+    // hyperparameter of steering PID controller
+    double steer_output_norm_ = 0.0;
+    double steer_P_ = 1.7;
     double steer_I_ = 0.0000;
+    double steer_D_ = 0.00001;
 
     // Initialize error, derivative of error, integration of error
     double steer_error_old_ = 0;
     double steer_error_I_ = 0;
 
     // Initialize throttle PID controller and parameters
-
+    double throttle_output_norm_;
     double max_velocity = 50;  // max velocity
-    double throttle_P = 0.2;
-    double throttle_I = -0.00001;
+    double throttle_P = 0.04;
+    double throttle_I = 125 / 1e6;
     double throttle_D = -0.02;
     double throttle_error_old = 0;
     double throttle_error_I = 0;
@@ -141,8 +132,8 @@ protected:
     double velocity_front_car_;
     double old_distance_;
     double min_distance = 30;  // min safe car-car distance
-    double distance_P = 0.03;
-    double distance_I = 0;
+    double distance_P = 1.5;
+    double distance_I = 15 / 1e6;
     double distance_D = 0.0003;
     double distance_error_old = 0;
     double distance_error_I = 0;
@@ -153,24 +144,32 @@ protected:
     // Insert your algorithm here
     void detectLanes()
     {
-        regionDetection( image_ );
+        is_stop_lane_present_ = true;
+        red_stop_sign_ = false;
+        // isRedLightPresent( image_ );
 
-        colorDetection( image_ );
+        cv::Mat region_of_interest = regionDetection( image_ );
 
-        edgeDetection( image_ );
+        cv::Mat color_filtered_img = colorDetection( region_of_interest );
 
-        lineDetection( image_ );
+        cv::Mat edge_detected_img = edgeDetection( color_filtered_img );
 
-        BEV_image_ = birdEyeView( image_, true );
+        laneDetection( edge_detected_img, image_ );
 
-        steeringControl( original_image_ );
-        throttle_output_norm_ = 0.0;
+        steeringControl( image_ );
+
+        // cv::Mat bird_eye_view_img = birdEyeView( image_, true );
+        imshow( "lane detected", image_ );
+        // imshow( "bird eye view", bird_eye_view_img );
+        /* cv::putText( bird_eye_view_img, "Steering:" + to_string( steer_output_norm_ ),
+                      Point( 300, 45 ), FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );*/
+        throttleControl();
+        saveToCSV();
     }
 
     void detectLanes_poly()
     {
-
-        //isRedLightPresent( image_ );
+        // isRedLightPresent( image_ );
 
         regionDetection( image_ );
         Mat BEV_img_color = birdEyeView_fullscreen( image_, true );
@@ -178,9 +177,9 @@ protected:
         Mat image_color_detected = colorDetection( image_ );
         cv::imshow( "image_color_detected", image_color_detected );
 
-        //edgeDetection( image_color_detected );
+        // edgeDetection( image_color_detected );
         // isStopLanePresent( image_ );
-        stop_lane_ = true;
+        is_stop_lane_present_ = true;
         Mat edge_detected_image = edgeDetectionPoly( image_color_detected );
         BEV_image_ = birdEyeView_fullscreen( edge_detected_image, true );
         cv::imshow( "BEV_image", BEV_image_ );
@@ -203,8 +202,8 @@ protected:
 
         cv::polylines( BEV_img_color, right_lane.last_center_pts_pixel, false,
                        Scalar( 246, 161, 75 ), 5 );
-        
-		BEV_image_ = BEV_img_color;
+
+        BEV_image_ = BEV_img_color;
 
         throttleControl();
         // throttle_output_norm_ = 0.0;
@@ -222,11 +221,15 @@ protected:
         }
     }
 
-    void regionDetection( Mat img )
-    {
-        /*Create a region of interest to concentrate on the road*/
+    /* Aufgabe2: Lane Detection*/
 
-        cout << "Start to detect region: " << endl;
+    // Create region of interest
+    cv::Mat regionDetection( Mat img )
+    {
+        if( img.empty() )
+        {
+            cout << "No Image Input!" << endl;
+        }
         Mat result;
         int img_height = img.size().height;
         int img_width = img.size().width;
@@ -239,6 +242,7 @@ protected:
         pts.push_back( Point( 0, img_height / 2 + 45 ) );          // top left
         pts.push_back( Point( img_width, img_height / 2 + 45 ) );  // top right
         pts.push_back( Point( img_width, img_height ) );           // bottom left
+        pts.push_back( Point( img_width / 2, img_height - 40 ) );  // bottom center
         pts.push_back( Point( 0, img_height ) );                   // bottom right
 
         v_pts.push_back( pts );
@@ -252,7 +256,7 @@ protected:
             cv::cvtColor( mask_crop, mask_three_channel,
                           COLOR_GRAY2BGR );  // transform mask into three channels
             cv::bitwise_and( img, mask_three_channel, result );
-            cout << " Region is detected." << endl;
+            // cout << " Region is detected." << endl;
         }
         else
         {
@@ -267,12 +271,14 @@ protected:
             merge( channels, mask_three_channel );
 
             cv::bitwise_and( img, mask_three_channel, result );
-            cout << " Region is detected." << endl;
+            // cout << " Region is detected." << endl;
         }
 
-        image_ = result;
+        return result;
     }
-    Mat colorDetection( cv::Mat img )
+
+    // Filter white line with HSV color space
+    cv::Mat colorDetection( cv::Mat img )
     {
         /*According to HSV color space, this function will pick white and yellow region from
          * original region*/
@@ -292,11 +298,12 @@ protected:
 
         // Combine two regions
         cv::bitwise_or( mask_yellow, mask_white, mask_combined );
-        cout << " Color is detected." << endl;
+        // cout << " Color is detected." << endl;
         return mask_combined;
-        cv::imshow( "Color Detection", mask_combined );
     }
-    void edgeDetection( cv::Mat image )
+
+    // Use Canny() to detect edges
+    cv::Mat edgeDetection( cv::Mat image )
     {
         cv::Mat grad_img, blurred_img;
 
@@ -324,13 +331,14 @@ protected:
         cv::addWeighted( abs_grad_x, 0.5, abs_grad_y, 0.5, 0, grad );*/
 
         // Second method: Canny Edge Detector
-        cv::GaussianBlur( image, blurred_img, cv::Size( 3, 3 ), 20, 0, cv::BORDER_DEFAULT );
+        cv::GaussianBlur( image, blurred_img, cv::Size( 3, 3 ), 0, 0, cv::BORDER_DEFAULT );
 
-        cv::Canny( image, grad_img, 50, 200 );
+        cv::Canny( image, grad_img, 100, 200 );
 
-        cout << " Edge is detected." << endl;
-        image_ = grad_img;
+        // cout << " Edge is detected." << endl;
+        return grad_img;
     }
+
     cv::Mat edgeDetectionPoly( cv::Mat image )
     {
         cv::Mat grad_img, blurred_img;
@@ -342,7 +350,8 @@ protected:
 
         return grad_img;
     }
-    Mat birdEyeView( Mat img, bool mode )
+
+    cv::Mat birdEyeView( Mat img, bool mode )
     {
         /*Create bird eye view*/
 
@@ -375,75 +384,181 @@ protected:
 
         return BEV_img;
     }
-    void lineDetection( cv::Mat img )
-    {
-        std::vector<Vec4i> lines;
-        cv::HoughLinesP( img, lines, 6, CV_PI / 60, 75, 40, 10 );
 
-        if( lines.empty() )
+    // Lane Detection
+    void laneDetection( cv::Mat img, cv::Mat output_img )
+    {
+        std::vector<Vec4i> raw_lines;
+        cv::Mat img_color;
+        cv::HoughLinesP( img, raw_lines, 6, CV_PI / 180, 100, 40,
+                         10 );  // Probabilistic Line Transform 1 and CV_PI:resolution , 50 :
+                                // threshold of number of votes, 50 : minLineLength, 10: maxLineGap
+
+        if( raw_lines.empty() )
         {
             cout << "no line is detected!" << endl;
         }
 
-        // Mat img_color;
-        //     cvtColor( img, img_color, COLOR_GRAY2BGR );
-        //     // painting lines in original image
-        //      for( size_t i = 0; i < lines.size(); i++ )
-        //     {
-        //         Vec4i l = lines[i];
-        //
-        //         line( img_color, Point( l[0], l[1] ), Point( l[2], l[3] ), Scalar( 0, 0, 255 ),
-        //         3,
-        //               LINE_AA );
-        //     }
-
-        //    imshow( "dada",img_color );
-    }
-    void drawLans_line( Mat img, vector<Vec4i> lines )
-    {
-        Mat img_color;
-        vector<Point> left_points_, right_points_;  // the points of left and right lanes
         cvtColor( img, img_color, COLOR_GRAY2BGR );
-        // devide all detected lines into 2 groups accroding to slope
-        for( const Vec4i& l : lines )
+        // painting lines in original image
+        for( size_t i = 0; i < raw_lines.size(); i++ )
+        {
+            Vec4i l = raw_lines[i];
+
+            line( img_color, Point( l[0], l[1] ), Point( l[2], l[3] ), Scalar( 0, 0, 255 ), 3,
+                  LINE_AA );
+        }
+        imshow( "raw_lines", img_color );
+
+        vector<Point> left_lines, right_lines, stop_lines;  // the points of left and right lanes
+        cv::cvtColor( img, img_color, COLOR_GRAY2BGR );
+
+        // devide all detected lines into 3 groups accroding to slope
+        for( const Vec4i& l : raw_lines )
         {
             double slope = static_cast<double>( l[3] - l[1] ) / ( l[2] - l[0] );
-
-            if( slope > 0 )
+            if( slope > 0.3 && slope < 0.7 )
             {
-                right_points_.emplace_back( l[0], l[1] );
-                right_points_.emplace_back( l[2], l[3] );
+                right_lines.emplace_back( l[0], l[1] );
+                right_lines.emplace_back( l[2], l[3] );
             }
-            else
+            else if( slope < -0.2 && slope > -0.75 )
             {
-                left_points_.emplace_back( l[0], l[1] );
-                left_points_.emplace_back( l[2], l[3] );
+                left_lines.emplace_back( l[0], l[1] );
+                left_lines.emplace_back( l[2], l[3] );
             }
-        }
-
-        int imgHeight = img_color.rows;
-        // merge and draw left lane
-        if( !left_points_.empty() )
-        {
-            left_lane_ = mergeLines( original_image_, left_points_, Scalar( 255, 0, 0 ), 10000.0,
-                                     imgHeight );
+            else if( -0.1 < slope && slope < 0.1 )
+            {
+                stop_lines.emplace_back( l[0], l[1] );
+                stop_lines.emplace_back( l[2], l[3] );
+            }
         }
 
         // merge and draw right lane
-        if( !right_points_.empty() )
+        if( !right_lines.empty() )
         {
-            right_lane_ = mergeLines( original_image_, right_points_, Scalar( 0, 255, 0 ), 10000.0,
-                                      imgHeight );
+            right_lane_ = mergeLines( right_lines, img_color.rows );
+            // laneDetectionRobust( right_lane_, "r" );
+            line( output_img, right_lane_.at( 0 ), right_lane_.at( 1 ), Scalar( 0, 255, 0 ), 5,
+                  LINE_AA );
+        }
+        else
+        {
+            line( output_img, right_lane_.at( 0 ), right_lane_.at( 1 ), Scalar( 255, 255, 0 ), 5,
+                  LINE_AA );
+            cout << "Right lane is not detected, previous detection will be used." << endl;
+        }
+        // merge and draw left lane
+        if( !left_lines.empty() )
+        {
+            left_lane_ = mergeLines( left_lines, img_color.rows );
+
+            // laneDetectionRobust( left_lane_, "l" );
+
+            line( output_img, left_lane_.at( 0 ), left_lane_.at( 1 ), Scalar( 255, 0, 0 ), 5,
+                  LINE_AA );
         }
 
-        cout << "Lines are detected" << endl;
+        else
+        {
+            line( output_img, left_lane_.at( 0 ), left_lane_.at( 1 ), Scalar( 0, 0, 255 ), 5,
+                  LINE_AA );
+            cout << "Left lane is not detected, previous detection will be used." << endl;
+        }
+        // Merge stop lane
+        if( !stop_lines.empty() )
+        {
+            stop_lane_ = mergeLines( stop_lines, img_color.rows );
+        }
+    }
+
+    void laneDetectionRobust( vector<Point> lane, string lane_name )
+    {
+        vector<double>* lane_slope_history_ptr = nullptr;
+        vector<double>* lane_bias_history_ptr = nullptr;
+
+        if( lane_name == "r" )
+        {
+            lane_slope_history_ptr = &right_lane_slope_history_;
+            lane_bias_history_ptr = &right_lane_bias_history;
+        }
+        else
+        {
+            lane_slope_history_ptr = &left_lane_slope_history_;
+            lane_bias_history_ptr = &left_lane_bias_history;
+        }
+
+        // Define slope and bias
+        double slope = static_cast<double>( lane.at( 1 ).y - lane.at( 0 ).y ) /
+                       ( lane.at( 1 ).x - lane.at( 0 ).x );
+
+        double bias = static_cast<double>( lane.at( 1 ).y - slope * lane.at( 1 ).x );
+
+        // Fill slope and bias history vector
+        if( lane_slope_history_ptr->size() < 10 )
+        {
+            lane_slope_history_ptr->push_back( slope );
+            lane_bias_history_ptr->push_back( bias );
+        }
+        // When have enough slope and bias history
+        else
+        {
+            double slope_sum = std::accumulate( lane_slope_history_ptr->begin(),
+                                                lane_slope_history_ptr->end(), 0.0 );
+            double slope_mean = slope_sum / lane_slope_history_ptr->size();
+
+            double bias_sum = std::accumulate( lane_bias_history_ptr->begin(),
+                                               lane_bias_history_ptr->end(), 0.0 );
+            double bias_mean = bias_sum / lane_bias_history_ptr->size();
+
+            // If current slope is close to slope mean
+            if( std::abs( slope - slope_mean ) < 0.1 )
+            {
+                lane_slope_history_ptr->erase( lane_slope_history_ptr->begin() );
+                lane_slope_history_ptr->push_back( slope );
+                slope_sum = std::accumulate( lane_slope_history_ptr->begin(),
+                                             lane_slope_history_ptr->end(), 0.0 );
+                slope_mean = slope_sum / lane_slope_history_ptr->size();
+            }
+
+            // If current bias is close to bias mean
+            if( std::abs( bias - bias_mean ) < 10 )
+            {
+                lane_bias_history_ptr->erase( lane_bias_history_ptr->begin() );
+                lane_bias_history_ptr->push_back( bias );
+                bias_sum = std::accumulate( lane_bias_history_ptr->begin(),
+                                            lane_bias_history_ptr->end(), 0.0 );
+                bias_mean = bias_sum / lane_bias_history_ptr->size();
+            }
+
+            /*for( auto bias : left_lane_bias_history )
+            {
+                cout << bias << ",";
+                        }*/
+            /*cout << endl;
+            cout << "bias mean of history is: " << bias_mean << ", "
+                 << "current bias mean is: " << bias << endl;
+
+            cout << "slope mean of history is: " << slope_mean << ", "
+                 << "current slope mean is: " << slope << endl;*/
+
+            if( lane_name == "r" )
+            {
+                right_lane_.at( 1 ).x = ( right_lane_.at( 1 ).y - bias_mean ) / slope_mean;
+            }
+            else
+            {
+                left_lane_.at( 1 ).x = ( left_lane_.at( 1 ).y - bias_mean ) / slope_mean;
+            }
+        }
     }
 
     /*Use fitLine() function to merge all line which point to same direction to one line*/
-    vector<Point> mergeLines( Mat& image, const vector<Point>& points, Scalar color,
-                              double limitedLength, int img_height )
+    vector<Point> mergeLines( const vector<Point>& points, int img_height )
     {
         Vec4f line_parameters;
+        // fitLine(input vector, output line, distance type, distance parameter, radial
+        // parameter, angle parameter) output (vx, vy, x, y)
         fitLine( points, line_parameters, DIST_L2, 0, 0.01, 0.01 );
 
         Point point1, point2;
@@ -460,80 +575,85 @@ protected:
         point2.x = point1.x + ( img_height - point1.y ) / k;
         point2.y = img_height;
 
+        vector<Point> lane_points;
+        lane_points.push_back( point1 );
+        lane_points.push_back( point2 );
+
         //
-        line( image, point1, point2, color, 2, LINE_AA );
+        // line( image, point1, point2, color, 2, LINE_AA );
 
         // Save all the lane points
-        vector<Point> points_lane;
+        /*vector<Point> points_lane;
         for( int i = img_height / 2 + 40; i < img_height; i++ )
         {
             points_lane.push_back(
                 Point( point1.x + ( i - point1.y ) / line_parameters[1] * line_parameters[0], i ) );
-        }
+        }*/
 
-        return points_lane;
+        return lane_points;
     }
 
     /* Stop Lane Detection*/
-    void isStopLanePresent( Mat img )
-    {
-        std::vector<Vec4i> lines;
-        cv::HoughLinesP( img, lines, 6, CV_PI / 60, 75, 40, 10 );
+    // void isStopLanePresent( Mat img )
+    //{
+    //    std::vector<Vec4i> lines;
+    //    cv::HoughLinesP( img, lines, 6, CV_PI / 60, 75, 40, 10 );
 
-        vector<Point> stop_lines;
-        // devide all detected lines into 2 groups accroding to slope
-        for( const Vec4i& l : lines )
-        {
-            double slope = static_cast<double>( l[3] - l[1] ) / ( l[2] - l[0] );
+    //    vector<Point> stop_lines;
+    //    // devide all detected lines into 2 groups accroding to slope
+    //    for( const Vec4i& l : lines )
+    //    {
+    //        double slope = static_cast<double>( l[3] - l[1] ) / ( l[2] - l[0] );
 
-            if( -0.1 < slope && slope < 0.1 )
-            {
-                stop_lines.emplace_back( l[0], l[1] );
-                stop_lines.emplace_back( l[2], l[3] );
-            }
-        }
+    //        if( -0.1 < slope && slope < 0.1 )
+    //        {
+    //            stop_lines.emplace_back( l[0], l[1] );
+    //            stop_lines.emplace_back( l[2], l[3] );
+    //        }
+    //    }
 
-        vector<Point> stop_lane = {};
-        if( !stop_lines.empty() )
-        {
-            stop_lane_ = true;
-            stop_lane = mergeLines( original_image_, stop_lines, Scalar( 0, 255, 0 ), 10000.0,
-                                    original_image_.cols );
-        }
-        else
-        {
-            stop_lane_ = false;
-            cout << "there is no stop lane in front of the car." << endl;
-        }
-    }
+    //    vector<Point> stop_lane = {};
+    //    if( !stop_lines.empty() )
+    //    {
+    //        is_stop_lane_present_ = true;
+    //        stop_lane = mergeLines( original_image_, stop_lines, Scalar( 0, 255, 0 ), 10000.0,
+    //                                original_image_.cols );
+    //    }
+    //    else
+    //    {
+    //        is_stop_lane_present_ = false;
+    //        cout << "there is no stop lane in front of the car." << endl;
+    //    }
+    //}
 
     /* Red Sign Detection*/
-    void isRedLightPresent( cv::Mat image_ )
+    void isRedLightPresent( cv::Mat img )
     {
         cv::Mat image8U;
-        cv::Rect region( 0, 0, image_.cols, image_.rows * 0.55 );
-        cv::Mat img_region = image_( region );
+        cv::Rect region( 0, 0, img.cols, img.rows * 0.55 );
+        cv::Mat img_region = img( region );
+        imshow( "img_region", img_region );
         if( img_region.empty() )
         {
             std::cerr << "empty \n";
             return;
         }
 
-        if( img_region.type() != CV_8UC3 )
-        {
-            // transform
-            img_region.convertTo( image8U, CV_8UC3, 255.0 );
-        }
-        else
-        {
-            image8U = img_region.clone();
-        }
+        // if( img_region.type() != CV_8UC3 )
+        //{
+        //    // transform
+        //    img_region.convertTo( image8U, CV_8UC3, 255.0 );
+        //}
+        // else
+        //{
+        //    image8U = img_region.clone();
+        //}
 
         // from BGR to HSV
         cv::Mat hsv_img;
         try
         {
-            cv::cvtColor( image8U, hsv_img, cv::COLOR_BGR2HSV );
+            cv::cvtColor( img_region, hsv_img, cv::COLOR_BGR2HSV );
         }
         catch( cv::Exception& e )
         {
@@ -542,8 +662,9 @@ protected:
         }
 
         // range of red
-        cv::Scalar lower_red = cv::Scalar( 135, 90, 0 );
+        cv::Scalar lower_red = cv::Scalar( 130, 90, 0 );
         cv::Scalar upper_red = cv::Scalar( 255, 255, 255 );
+
         // detect red color
         cv::Mat mask_red;
         cv::inRange( hsv_img, lower_red, upper_red, mask_red );
@@ -553,7 +674,7 @@ protected:
         int red_pixels = cv::countNonZero( mask_red );
         cout << "red_pixels =" << red_pixels << endl;
         // if more than 0 pixels are in green, brake
-        if( red_pixels > 0 )
+        if( red_pixels > 75 )
         {
             // cv::imshow( "Red Mask", mask_red );
             // cv::waitKey( 0 );  // 0 means wait for any key press
@@ -563,11 +684,12 @@ protected:
         else
         {
             red_stop_sign_ = false;
+
             return;
         }
     }
 
-    /*     Steering       */
+    /* Aufgabe3: Steering Control     */
     void steeringControl( Mat img )
     {
         if( left_lane_.empty() || right_lane_.empty() )
@@ -575,18 +697,17 @@ protected:
             return;
         }
         // Use PID controller to control steering
-        double target_point = ( left_lane_.back().x + right_lane_.back().x ) / 2;
+        double target_point = ( left_lane_.front().x + right_lane_.front().x ) / 2;
         double curr_point = img.cols / 2;
         Point middle_point( ( left_lane_.front().x + right_lane_.front().x ) / 2,
                             left_lane_.front().y );
-        int height = original_image_.rows;
+        int height = img.rows;
 
-        // draw the target driving direction
-        circle( original_image_, middle_point, 1, Scalar( 255, 0, 0 ) );
-        line( original_image_, Point( target_point, height - 1 ), middle_point,
-              Scalar( 0, 255, 255 ), 5 );
-        line( original_image_, Point( curr_point, height - 1 ), Point( target_point, height - 1 ),
-              Scalar( 0, 0, 255 ), 10 );
+        //// draw the target driving direction
+        // circle( img, middle_point, 1, Scalar( 255, 0, 0 ) );
+        // line( img, Point( target_point, height - 1 ), middle_point, Scalar( 0, 255, 255 ), 5 );
+        // line( img, Point( curr_point, height - 1 ), Point( target_point, height - 1 ),
+        //      Scalar( 0, 0, 255 ), 10 );
 
         double steer_error_P =
             target_point - curr_point;  // current steering error = the difference between target
@@ -599,11 +720,17 @@ protected:
         double steer_output = steer_error_P * steer_P_ + steer_erro_D * steer_D_ +
                               steer_I_ * steer_error_I_;  // The output from PD controller
 
-        // normalize the output between -1 and 1
-        steer_output_norm_ = steer_output / ( original_image_.cols / 2 );
+        /*cout << "Steering error:" << steer_error_P << ", " << steer_error_I_ << ", " <<
+           steer_erro_D
+             << endl;*/
 
-        cv::putText( original_image_, "Steering:" + to_string( steer_output_norm_ ),
-                     Point( 300, 45 ), FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );
+        // normalize the output between -1 and 1
+        steer_output_norm_ = steer_output / ( img.cols / 2 );
+
+        if( steer_output_norm_ > -0.05 && steer_output_norm_ < 0.05 )
+        {
+            steer_output_norm_ = 0;
+        }
     }
 
     void steeringControl_poly( Mat BEV_img_color )
@@ -659,7 +786,7 @@ protected:
 
     bool processBoundingBox( tronis::BoxDataSub* sensorData )
     {
-        double min_distance = std::numeric_limits<double>::infinity();
+        double min_distance = 100;
         double distance;
 
         // Sensor may detect several objects, all objects should be processed
@@ -676,23 +803,39 @@ protected:
             float width = extends.Y;
             float height = extends.Z;
 
-            // filter detected cars
+            float angle = std::atan( pos_y / pos_x );
+            // filter detected cars size
+            distance = sqrt( pow( pos_x / 100, 2 ) + pow( pos_y / 100, 2 ) );
+            /*std::cout << "The distance from" << object.ActorName.Value() << " is" << distance
+                      << std::endl;
+            cout << "length of object is:" << length << ", width is " << width << endl;
+            cout << "pox x = " << pos_x << ","
+                 << "pox y = " << pos_y << endl;*/
             if( length > 100 && length < 800 && width > 100 && width < 800 )
             {
-                distance = sqrt( pow( pos_x / 100, 2 ) + pow( pos_y / 100, 2 ) );
-                if( distance < min_distance && distance > 0 )
+                // Filter self car
+                if( pos_x != 0.0 )
                 {
-                    min_distance = distance;
-                    std::cout << "The distance from" << object.ActorName.Value() << " is"
-                              << min_distance << std::endl;
-                    cout << "length of object is:" << length << ", width is " << width << endl;
+                    // filter detected cars which in other lane
+                    if( std::abs( pos_y ) < 2000 )
+                    {
+                        distance = sqrt( pow( pos_x / 100, 2 ) + pow( pos_y / 100, 2 ) );
+                        if( distance < min_distance && distance > 0 )
+                        {
+                            min_distance = distance;
+                            /* std::cout << "The distance from" << object.ActorName.Value() << " is"
+                                       << min_distance << std::endl;
+                             cout << "length of object is:" << length << ", width is " << width
+                                  << endl;*/
+                        }
+                    }
                 }
             }
         }
         old_distance_ = distance_;
         distance_ = min_distance;
 
-        if( distance_ == std::numeric_limits<double>::infinity() )
+        if( distance_ >= 100 )
         {
             isCardAhead = false;
         }
@@ -705,27 +848,32 @@ protected:
 
     void throttleControl()
     {
-        double velocity_compensation = distanceControl();
+        // double velocity_compensation = distanceControl();
         double velocity_of_front_car = speedEstimator();
 
-        cout << "isStopLanePresent: " << stop_lane_ << ", "
-             << "isRedLightPresent: " << red_stop_sign_ << endl;
+        cout << "isStopLanePresent: " << is_stop_lane_present_ << ", "
+             << "isRedLightPresent: " << red_stop_sign_ << ","
+             << "isStop:" << isStop_ << endl;
 
-        
-        if( red_stop_sign_ == true && stop_lane_ == true &&
-            isStop_ == false 
-          )  // detect red stop sign and car is not stopped
+        // Brake Assistant
+        if( red_stop_sign_ == true && is_stop_lane_present_ == true &&
+            isStop_ == false )  // detect red stop sign and car is not stopped
         {
-          
-            throttle_output_norm_ = -0.5;
+            cout << "red is present, shoule brake!" << endl;
+
             if( ego_velocity_ < 1 )  // check if the car stop already or not
             {
+                cout << "current ego velocity is:" << ego_velocity_ << endl;
                 stopCarForDuration( std::chrono::seconds( 3 ) );
             }
-           
+            else
+            {
+                throttle_output_norm_ = 0;
+            }
+
             return;
         }
-        else if( red_stop_sign_ == true && stop_lane_ == true &&
+        else if( red_stop_sign_ == true && is_stop_lane_present_ == true &&
                  isStop_ == true )  // detect red stop sign and car is  stopped
         {
             isBrake_ = false;
@@ -735,44 +883,54 @@ protected:
             isBrake_ = false;
         }
 
-        if( isCardAhead && ( distance_ < min_distance + 5 && ego_velocity_ > 40 ) ||
-            ( distance_ < min_distance + 10 && ego_velocity_ > 45 ) )
+        // Throttle Control
+        // if( isCardAhead && ( distance_ < min_distance + 5 && ego_velocity_ > 40 ) ||
+        //    ( distance_ < min_distance + 10 && ego_velocity_ > 45 ) )
+        //{
+        //    throttle_output_norm_ = -0.5;
+        //}
+        // else if( isCardAhead && distance_ <= min_distance )
+        //{
+        //    if( abs( ego_velocity_ ) < 1 )  // make it absolutely stop
+        //    {
+        //        throttle_output_norm_ = 0;
+        //    }
+        //    else  // urgent stop
+        //    {
+        //        throttle_output_norm_ = -0.5;
+        //    }
+        //}
+        // else
+        //{
+        //    if( abs( ego_velocity_ ) > max_velocity )  // stop accerating before a sharp turn
+        //    {
+        //        throttle_output_norm_ = -0.5;
+        //    }
+
+        //    if( abs( ego_velocity_ ) > 20 )  // to keep the cvelocity stable
+        //    {
+        //        speedControl( max_velocity, 0 );
+        //    }
+
+        //    else  // make it reaccelerate faster after deaccelerating
+        //    {
+        //        throttle_output_norm_ = 1;
+        //    }
+        //}
+
+        if( isCardAhead )
         {
-            throttle_output_norm_ = -0.5;
-        }
-        else if( isCardAhead && distance_ <= min_distance )
-        {
-            if( abs( ego_velocity_ ) < 1 )  // make it absolutely stop
-            {
-                throttle_output_norm_ = 0;
-            }
-            else  // urgent stop
-            {
-                throttle_output_norm_ = -0.5;
-            }
+            distanceControl();
         }
         else
         {
-            if( abs( ego_velocity_ ) > max_velocity )  // stop accerating before a sharp turn
-            {
-                throttle_output_norm_ = -0.5;
-            }
-
-            if( abs( ego_velocity_ ) > 20 )  // to keep the cvelocity stable
-            {
-                speedControl( max_velocity, 0 );
-            }
-
-            else  // make it reaccelerate faster after deaccelerating
-            {
-                throttle_output_norm_ = 1;
-            }
+            speedControl( max_velocity );
         }
     }
 
-    void speedControl( double taget_velocity, double velocity_compensation )
+    void speedControl( double target_velocity )
     {
-        double throttle_error_P = taget_velocity - ego_velocity_ + velocity_compensation;
+        double throttle_error_P = target_velocity - ego_velocity_ ;
         throttle_error_I = throttle_error_I + throttle_error_old;
         double throttle_error_D = throttle_error_old - throttle_error_P;
 
@@ -783,10 +941,15 @@ protected:
 
         throttle_output_norm_ = std::min( throttle_output, 1.0 );
 
-        cout << "with speed controller, current throttle output is:" << throttle_output_norm_
-             << endl;
-        cout << "PID is " << throttle_error_P << "," << throttle_error_I << "," << throttle_error_D
-             << endl;
+        // Avoid over maximum velocity
+        if( ego_velocity_ > max_velocity +5 && !isCardAhead )
+        {
+            throttle_output_norm_ = 0.6;
+        }
+
+        cout << "Speed PID is P = " << throttle_error_P << ", I = " << throttle_error_I
+             << ", D =" << throttle_error_D << endl;
+        cout << "Throttle output = " << throttle_output_norm_ << endl;
     }
 
     std::string formatDouble( double value )
@@ -798,18 +961,39 @@ protected:
         return streamObj.str();
     }
 
-    double distanceControl()
+    void distanceControl()
     {
-        double distance_error_P = distance_ - min_distance;
+        double distance_target = 0.7 * ego_velocity_;
+
+        if( ego_velocity_ < 20 )
+        {
+            distance_target = 20;
+        }
+
+        double distance_error_P = distance_ - distance_target;
         double distance_error_D = distance_error_P - distance_error_old;
         distance_error_I = distance_error_I + distance_error_old;
 
         distance_error_old = distance_error_P;
 
-        double distance_output = distance_error_P * distance_P + distance_error_D * distance_D +
-                                 distance_error_I * distance_I;
+        double velocity_target = ego_velocity_ + distance_error_P * distance_P +
+                                 distance_error_D * distance_D + distance_error_I * distance_I;
 
-        return distance_output;
+        // Avoid negative velocity
+        if( velocity_target < 1 )
+        {
+            velocity_target = 0;
+        }
+        else if( velocity_target > max_velocity )
+        {
+            velocity_target = max_velocity;
+		}
+
+        speedControl( velocity_target );
+        cout << "distance PID Controller: P = " << distance_error_P << ", I = " << distance_error_I
+             << ", D = " << distance_error_D << endl;
+        cout << "Velocity Target is " << velocity_target << ", ego velocity = " << ego_velocity_
+             << ", distance = " << distance_ << endl;
     }
 
     double speedEstimator()
@@ -823,31 +1007,45 @@ protected:
     {
         auto startTime = std::chrono::high_resolution_clock ::now();
 
-		isWaiting = true;
+        isWaiting = true;
         while( isWaiting )
         {
+            throttle_output_norm_ = 0;
             auto currentTime = std::chrono::high_resolution_clock::now();
-            if( currentTime - startTime >= duration )
+            std::chrono::duration<double> diff = currentTime - startTime;
+            if( diff > duration )
             {
-                isWaiting = false;  
-				isBrake_ = false;
+                cout << "diff is: " << diff.count() << endl;
+                isWaiting = false;
+                isBrake_ = false;
                 isStop_ = true;
-                }
-
-			}
-        throttle_output_norm_ = -1;
-        
-        
+            }
+        }
     }
+
     void saveToCSV()
     {
         std::ofstream distanceData;
         distanceData.open( "D:\\200_Projekte\\distanceData.csv", ios::app );
-        if( distance_ < std::numeric_limits<double>::infinity() && distance_ < 60 )
+        if( isCardAhead )
         {
             distanceData << to_string( distance_ ) << "," << to_string( throttle_output_norm_ )
-                         << endl;
+                         << "," << ego_velocity_ << endl;
         }
+
+        distanceData.close();
+    }
+
+public:
+    void initialCSV()
+    {
+        std::ofstream distanceData;
+        distanceData.open( "D:\\200_Projekte\\distanceData.csv", std::ios::trunc );
+        distanceData << "Distance"
+                     << ","
+                     << "Throttle Output"
+                     << ","
+                     << "Ego Velocity" << endl;
         distanceData.close();
     }
     // Helper functions, no changes needed
@@ -950,10 +1148,7 @@ protected:
         image_ = tronis::image2Mat( image );
         original_image_ = image_;
 
-        detectLanes_poly();
-
-        showImage( "Lane detection", original_image_ );
-        showImage( "BEV_image", BEV_image_ );
+        detectLanes();
     }
 };
 
@@ -977,7 +1172,7 @@ int main( int argc, char** argv )
     uint32_t timeout_ms = 500;  // close grabber, if last received msg is older than this param
 
     LaneAssistant lane_assistant;
-
+    lane_assistant.initialCSV();
     while( key_press != 'q' )
     {
         std::cout << "Wait for connection..." << std::endl;
@@ -1037,7 +1232,7 @@ int main( int argc, char** argv )
 
 // int main( int argc, char** argv )
 //{
-//    Mat original_img = imread( "C:\\Users\\am3s33\\Pictures\\Camera Roll\\stop_test6.png" );
+//    Mat original_img =cv::imread( "C:\\Users\\am3s33\\Pictures\\Camera Roll\\stop_test7.png" );
 //
 //    LaneAssistant laneassistant;
 //    laneassistant.stopLineDetectionMethod( original_img );
