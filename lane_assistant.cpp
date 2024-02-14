@@ -31,7 +31,7 @@ public:
         string control_cmd = std::to_string( steer_output_norm_ ) + ";" +
                              std::to_string( throttle_output_norm_ ) + ";" +
                              std::to_string( isCardAhead ) + ";" + formatDouble( distance_ );
-                             
+
         socket.send( tronis::SocketData( control_cmd ) );
 
         return true;
@@ -41,7 +41,21 @@ public:
     {
         original_image_ = img;
         image_ = img;
-        detectLanes();
+        is_stop_lane_present_ = true;
+        isRedLightPresent( image_ );
+
+        cv::Mat region_of_interest = regionDetection( image_ );
+
+        cv::Mat color_filtered_img = colorDetection( region_of_interest );
+
+        cv::Mat edge_detected_img = edgeDetection( color_filtered_img );
+
+        cv::Mat bird_eye_view_img = birdEyeView( edge_detected_img, true );
+
+        laneDetection_withBEV( bird_eye_view_img, image_ );
+        imshow( "bird eye view", bird_eye_view_img );
+        imshow( "color detection", color_filtered_img );
+        imshow( "color detection", image_ );
     }
 
 protected:
@@ -71,9 +85,9 @@ protected:
     std::chrono::steady_clock::time_point currentTime_;
     // hyperparameter of steering PID controller
     double steer_output_norm_ = 0.0;
-    double steer_P_ = 1.7;
-    double steer_I_ = 0.0000;
-    double steer_D_ = 0.00001;
+    double steer_P_ = 2.0;
+    double steer_I_ = 0.0001;
+    double steer_D_ = 10;
 
     // Initialize error, derivative of error, integration of error
     double steer_error_old_ = 0;
@@ -102,7 +116,6 @@ protected:
     std::map<std::string, int> rightLaneVehicle;
     std::map<std::string, int> leftLaneVehicle;
 
-    
     // Function to detect lanes based on camera image
     // Insert your algorithm here
     void detectLanes()
@@ -119,14 +132,13 @@ protected:
         laneDetection( edge_detected_img, image_ );
 
         steeringControl( image_ );
-
-        // cv::Mat bird_eye_view_img = birdEyeView( image_, true );
+        
+        cv::Mat bird_eye_view_img = birdEyeView( color_filtered_img, true );
         imshow( "lane detected", image_ );
-        // imshow( "bird eye view", bird_eye_view_img );
+        imshow( "bird eye view", bird_eye_view_img );
         /* cv::putText( bird_eye_view_img, "Steering:" + to_string( steer_output_norm_ ),
                       Point( 300, 45 ), FONT_HERSHEY_COMPLEX, 1, Scalar( 0, 255, 0 ), 1 );*/
         throttleControl();
-        saveToCSV();
     }
 
     /* Aufgabe2: Lane Detection*/
@@ -149,9 +161,9 @@ protected:
         vector<vector<Point>> v_pts;
         pts.push_back( Point( 0, img_height / 2 + 45 ) );          // top left
         pts.push_back( Point( img_width, img_height / 2 + 45 ) );  // top right
-        pts.push_back( Point( img_width, img_height ) );           // bottom left
-        pts.push_back( Point( img_width / 2, img_height - 40 ) );  // bottom center
-        pts.push_back( Point( 0, img_height ) );                   // bottom right
+        pts.push_back( Point( img_width, img_height - 70 ) );      // bottom left
+        // pts.push_back( Point( img_width / 2, img_height - 80 ) );  // bottom center
+        pts.push_back( Point( 0, img_height - 70 ) );  // bottom right
 
         v_pts.push_back( pts );
 
@@ -194,20 +206,32 @@ protected:
         // Transform image from RBG to HSV color space
         cvtColor( img, img_hsv, COLOR_BGR2HSV );
 
-        // yellow region hsv threshold
-        cv::Scalar lower_yellow( 20, 100, 120 );
-        cv::Scalar upper_yellow( 30, 255, 255 );
-        cv::inRange( img_hsv, lower_yellow, upper_yellow, mask_yellow );
-
         // white region hsv threshold
-        cv::Scalar lower_white( 106, 0, 130 );
+        cv::Scalar lower_white( 106, 0, 120 );
         cv::Scalar upper_white( 173, 90, 200 );
         cv::inRange( img_hsv, lower_white, upper_white, mask_white );
 
+        // yellow region hsv threshold
+        cv::Scalar lower_yellow( 0, 150, 75 );
+        cv::Scalar upper_yellow( 160, 255, 255 );
+        cv::inRange( img_hsv, lower_yellow, upper_yellow, mask_yellow );
+
+        int yellow_pixels = cv::countNonZero( mask_yellow );
+        // cout << "Current yellow pixels are " << yellow_pixels << endl;
+
+        if( yellow_pixels > 100 )
+        {
+            // imshow( "yellow mask", mask_yellow );
+            return mask_yellow;
+        }
+        else
+        {
+            return mask_white;
+        }
+        imshow( "color detection", mask_white );
+
         // Combine two regions
-        cv::bitwise_or( mask_yellow, mask_white, mask_combined );
-        // cout << " Color is detected." << endl;
-        return mask_combined;
+        // cv::bitwise_or( mask_yellow, mask_white, mask_combined );
     }
 
     // Use Canny() to detect edges
@@ -255,16 +279,25 @@ protected:
         int image_width = img.size().width;
 
         vector<Point2f> src( 4 ), dst( 4 );
-        src[0] = Point2f( 0, image_height / 2 + 45 );            // top left
-        src[1] = Point2f( 0, image_height );                     // bottom left
-        src[2] = Point2f( image_width, image_height );           // bottom right
-        src[3] = Point2f( image_width, image_height / 2 + 45 );  // top right
+        // src[0] = Point2f( 0, image_height / 2 + 45 );            // top left
+        // src[1] = Point2f( 0, image_height - 70 );                // bottom left
+        // src[2] = Point2f( image_width, image_height - 70 );      // bottom right
+        // src[3] = Point2f( image_width, image_height / 2 + 45 );  // top right
 
-        dst[0] = Point2f( 0, 0 );                                // top left
-        dst[1] = Point2f( image_width / 2 - 45, image_height );  // bottom left
-        dst[2] = Point2f( image_width / 2 + 45, image_height );  // bottom right
-        dst[3] = Point2f( image_width, 0 );                      // top right
+        // dst[0] = Point2f( 0, 0 );                                // top left
+        // dst[1] = Point2f( image_width / 2 - 75, image_height );  // bottom left
+        // dst[2] = Point2f( image_width / 2 + 75, image_height );  // bottom right
+        // dst[3] = Point2f( image_width, 0 );                      // top right
 
+        src[0] = Point2f( image_width / 2 - 150, image_height / 2 + 45 );  // top left
+        src[1] = Point2f( 0, image_height - 100 );                         // bottom left
+        src[2] = Point2f( image_width, image_height - 100 );               // bottom right
+        src[3] = Point2f( image_width / 2 + 150, image_height / 2 + 45 );  // top right
+
+        dst[0] = Point2f( image_width / 2 - 250, 0 );             // top left
+        dst[1] = Point2f( image_width / 2 - 200, image_height );  // bottom left
+        dst[2] = Point2f( image_width / 2 + 200, image_height );  // bottom right
+        dst[3] = Point2f( image_width / 2 + 250, 0 );             // top right
         Mat M = getPerspectiveTransform( src, dst );
         Mat Minv = getPerspectiveTransform( dst, src );
         Mat BEV_img;
@@ -304,6 +337,7 @@ protected:
             line( img_color, Point( l[0], l[1] ), Point( l[2], l[3] ), Scalar( 0, 0, 255 ), 3,
                   LINE_AA );
         }
+
         imshow( "raw_lines", img_color );
 
         vector<Point> left_lines, right_lines, stop_lines;  // the points of left and right lanes
@@ -313,12 +347,18 @@ protected:
         for( const Vec4i& l : raw_lines )
         {
             double slope = static_cast<double>( l[3] - l[1] ) / ( l[2] - l[0] );
-            if( slope > 0.3 && slope < 0.7 )
+            double bias = l[3] - slope * l[2];
+
+            if( slope > 0.3 && slope < 0.75
+                //&& bias > 60 && bias < 170
+            )
             {
                 right_lines.emplace_back( l[0], l[1] );
                 right_lines.emplace_back( l[2], l[3] );
             }
-            else if( slope < -0.2 && slope > -0.75 )
+            else if( slope < -0.2 && slope > -0.75
+                     //&& bias > 350 && bias < 450
+            )
             {
                 left_lines.emplace_back( l[0], l[1] );
                 left_lines.emplace_back( l[2], l[3] );
@@ -333,7 +373,137 @@ protected:
         // merge and draw right lane
         if( !right_lines.empty() )
         {
-            right_lane_ = mergeLines( right_lines, img_color.rows );
+            right_lane_ = mergeLines( right_lines );
+            laneDetectionRobust( right_lane_, "r" );
+            //saveToCSV( right_lane_, true );
+            line( output_img, right_lane_.at( 0 ), right_lane_.at( 1 ), Scalar( 0, 255, 0 ), 5,
+                  LINE_AA );
+        }
+        /*else
+        {
+            line( output_img, right_lane_.at( 0 ), right_lane_.at( 1 ), Scalar( 255, 255, 0 ), 5,
+                  LINE_AA );
+            cout << "Right lane is not detected, previous detection will be used." << endl;
+        }*/
+        // merge and draw left lane
+        if( !left_lines.empty() )
+        {
+            left_lane_ = mergeLines( left_lines );
+            laneDetectionRobust( left_lane_, "l" );
+            //saveToCSV( left_lane_, false );
+
+            line( output_img, left_lane_.at( 0 ), left_lane_.at( 1 ), Scalar( 255, 0, 0 ), 5,
+                  LINE_AA );
+        }
+
+        /*else
+        {
+            line( output_img, left_lane_.at( 0 ), left_lane_.at( 1 ), Scalar( 0, 0, 255 ), 5,
+                  LINE_AA );
+            cout << "Left lane is not detected, previous detection will be used." << endl;
+        }*/
+
+        // Draw region of detection
+        std::vector<Point> poly_pts;
+        poly_pts.push_back( left_lane_.at( 0 ) );
+        poly_pts.push_back( right_lane_.at( 0 ) );
+        poly_pts.push_back( right_lane_.at( 1 ) );
+        poly_pts.push_back( cv::Point( output_img.cols, output_img.rows ) );
+        poly_pts.push_back( cv::Point( 0, output_img.rows ) );
+        poly_pts.push_back( left_lane_.at( 1 ) );
+
+        std::vector<vector<Point>> poly_line{poly_pts};
+
+        cv::Mat img_poly = Mat( output_img.size(), CV_8UC4, Scalar( 0, 0, 0, 0.5 ) );
+
+        cv::fillPoly( img_poly, poly_line, cv::Scalar( 0, 255, 100 ) );
+        addWeighted( output_img, 1.0, img_poly, 0.2, 0.0, output_img );
+
+        // Merge stop lane
+        if( !stop_lines.empty() )
+        {
+            stop_lane_ = mergeLines( stop_lines );
+        }
+    }
+
+    void laneDetection_withBEV( cv::Mat img, cv::Mat output_img )
+    {
+        std::vector<Vec4i> raw_lines;
+        cv::Mat img_color;
+        cv::HoughLinesP( img, raw_lines, 6, CV_PI / 180, 100, 40,
+                         10 );  // Probabilistic Line Transform 1 and CV_PI:resolution , 50 :
+                                // threshold of number of votes, 50 : minLineLength, 10: maxLineGap
+
+        if( raw_lines.empty() )
+        {
+            cout << "no line is detected!" << endl;
+        }
+
+        cvtColor( img, img_color, COLOR_GRAY2BGR );
+        // painting lines in original image
+        for( size_t i = 0; i < raw_lines.size(); i++ )
+        {
+            Vec4i l = raw_lines[i];
+
+            line( img_color, Point( l[0], l[1] ), Point( l[2], l[3] ), Scalar( 0, 0, 255 ), 3,
+                  LINE_AA );
+        }
+
+        Mat histogram, result;
+
+        // Binary Image
+        Mat binary_img;
+        cv::threshold( img, binary_img, 128.0, 255.0, THRESH_BINARY );
+
+        // Taks a histogram of the image
+        cv::reduce( binary_img, histogram, 0, REDUCE_SUM, CV_32F );
+
+        // Find peaks of left and right halves of the histogram
+        int midpoint = histogram.size().width / 2;
+
+        int left_base = std::distance(
+            histogram.begin<int>(),
+            std::max_element( histogram.begin<int>(), histogram.begin<int>() + midpoint ) );
+        int right_base = std::distance(
+            histogram.begin<int>(),
+            std::max_element( histogram.begin<int>() + midpoint, histogram.end<int>() ) );
+
+        line( img_color, Point( left_base, 0 ), Point( left_base, img_color.rows ),
+              Scalar( 0, 255, 255 ), 3 );
+        line( img_color, Point( right_base, 0 ), Point( right_base, img_color.rows ),
+              Scalar( 0, 255, 255 ), 3 );
+        imshow( "raw_lines", img_color );
+        vector<Point> left_lines, right_lines, stop_lines;  // the points of left and right lanes
+        cv::cvtColor( img, img_color, COLOR_GRAY2BGR );
+
+        // devide all detected lines into 3 groups accroding to slope
+        for( const Vec4i& l : raw_lines )
+        {
+            double slope = static_cast<double>( l[3] - l[1] ) / ( l[2] - l[0] );
+            int margin = 40;
+            if( abs( ( l[0] + l[2] ) / 2 - right_base ) < margin )
+            {
+                right_lines.emplace_back( l[0], l[1] );
+                right_lines.emplace_back( l[2], l[3] );
+            }
+            else if( abs( ( l[0] + l[2] ) / 2 - left_base ) < margin
+                     //&& bias > 350 && bias < 450
+            )
+            {
+                left_lines.emplace_back( l[0], l[1] );
+                left_lines.emplace_back( l[2], l[3] );
+            }
+            /*else if( -0.1 < slope && slope < 0.1 )
+            {
+                stop_lines.emplace_back( l[0], l[1] );
+                stop_lines.emplace_back( l[2], l[3] );
+            }*/
+        }
+
+        // merge and draw right lane
+        if( !right_lines.empty() )
+        {
+            right_lane_ = mergeLines_withBEV( right_lines );
             // laneDetectionRobust( right_lane_, "r" );
             line( output_img, right_lane_.at( 0 ), right_lane_.at( 1 ), Scalar( 0, 255, 0 ), 5,
                   LINE_AA );
@@ -347,7 +517,7 @@ protected:
         // merge and draw left lane
         if( !left_lines.empty() )
         {
-            left_lane_ = mergeLines( left_lines, img_color.rows );
+            left_lane_ = mergeLines_withBEV( left_lines );
 
             // laneDetectionRobust( left_lane_, "l" );
 
@@ -361,19 +531,20 @@ protected:
                   LINE_AA );
             cout << "Left lane is not detected, previous detection will be used." << endl;
         }
-        // Merge stop lane
-        if( !stop_lines.empty() )
-        {
-            stop_lane_ = mergeLines( stop_lines, img_color.rows );
-        }
     }
 
-    // Use fitLine() function to merge all line which point to same direction to one line
-    vector<Point> mergeLines( const vector<Point>& points, int img_height )
+    /*
+     * merge all line which point to same direction to one line
+     *
+     * @param points the endpoints on the line
+     * @return the endpoints of the merged line
+     */
+    vector<Point> mergeLines( const vector<Point>& points )
     {
         Vec4f line_parameters;
-        // fitLine(input vector, output line, distance type, distance parameter, radial
-        // parameter, angle parameter) output (vx, vy, x, y)
+        int img_height = original_image_.rows;
+        /* fitLine(input vector, output line, distance type, distance parameter, radial
+         parameter, angle parameter) output (vx, vy, x, y)*/
         fitLine( points, line_parameters, DIST_L2, 0, 0.01, 0.01 );
 
         Point point1, point2;
@@ -383,6 +554,53 @@ protected:
 
         //
         int startY = img_height / 2 + 40;
+        point1.x = point1.x + ( startY - point1.y ) / k;
+        point1.y = startY;
+
+        //
+        if( k > 0 )  // right lane points
+        {
+            point2.x = original_image_.cols;
+        }
+        else
+        {
+            point2.x = 0;
+        }
+
+        point2.y = k * ( point2.x - point1.x ) + point1.y;
+
+        vector<Point> lane_points;
+        lane_points.push_back( point1 );
+        lane_points.push_back( point2 );
+
+        //
+        // line( image, point1, point2, color, 2, LINE_AA );
+
+        // Save all the lane points
+        /*vector<Point> points_lane;
+        for( int i = img_height / 2 + 40; i < img_height; i++ )
+        {
+            points_lane.push_back(
+                Point( point1.x + ( i - point1.y ) / line_parameters[1] * line_parameters[0], i ) );
+        }*/
+
+        return lane_points;
+    }
+    vector<Point> mergeLines_withBEV( const vector<Point>& points )
+    {
+        Vec4f line_parameters;
+        int img_height = original_image_.rows;
+        /* fitLine(input vector, output line, distance type, distance parameter, radial
+         parameter, angle parameter) output (vx, vy, x, y)*/
+        fitLine( points, line_parameters, DIST_L2, 0, 0.01, 0.01 );
+
+        Point point1, point2;
+        point1.x = line_parameters[2];
+        point1.y = line_parameters[3];
+        double k = line_parameters[1] / line_parameters[0];
+
+        //
+        int startY = 0;
         point1.x = point1.x + ( startY - point1.y ) / k;
         point1.y = startY;
 
@@ -408,6 +626,94 @@ protected:
         return lane_points;
     }
 
+    void laneDetectionRobust( vector<Point> lane, string lane_name )
+    {
+        vector<double>* lane_slope_history_ptr = nullptr;
+        vector<double>* lane_bias_history_ptr = nullptr;
+
+        if( lane_name == "r" )
+        {
+            lane_slope_history_ptr = &right_lane_slope_history_;
+            lane_bias_history_ptr = &right_lane_bias_history;
+        }
+        else
+        {
+            lane_slope_history_ptr = &left_lane_slope_history_;
+            lane_bias_history_ptr = &left_lane_bias_history;
+        }
+
+        // Define slope and bias
+        double slope = static_cast<double>( lane.at( 1 ).y - lane.at( 0 ).y ) /
+                       ( lane.at( 1 ).x - lane.at( 0 ).x );
+
+        double bias = static_cast<double>( lane.at( 1 ).y - slope * lane.at( 1 ).x );
+
+        // Fill slope and bias history vector
+        if( lane_slope_history_ptr->size() < 6 )
+        {
+            lane_slope_history_ptr->push_back( slope );
+            lane_bias_history_ptr->push_back( bias );
+        }
+        // When have enough slope and bias history
+        else
+        {
+            lane_slope_history_ptr->erase( lane_slope_history_ptr->begin() );
+            lane_slope_history_ptr->push_back( slope );
+
+            lane_bias_history_ptr->erase( lane_bias_history_ptr->begin() );
+            lane_bias_history_ptr->push_back( bias );
+
+            double slope_sum = std::accumulate( lane_slope_history_ptr->begin(),
+                                                lane_slope_history_ptr->end(), 0.0 );
+            double slope_mean = slope_sum / lane_slope_history_ptr->size();
+
+            double bias_sum = std::accumulate( lane_bias_history_ptr->begin(),
+                                               lane_bias_history_ptr->end(), 0.0 );
+            double bias_mean = bias_sum / lane_bias_history_ptr->size();
+
+            //// If current slope is close to slope mean
+            // if( std::abs( slope - slope_mean ) < 0.1 )
+            //{
+            //    lane_slope_history_ptr->erase( lane_slope_history_ptr->begin() );
+            //    lane_slope_history_ptr->push_back( slope );
+            //    slope_sum = std::accumulate( lane_slope_history_ptr->begin(),
+            //                                 lane_slope_history_ptr->end(), 0.0 );
+            //    slope_mean = slope_sum / lane_slope_history_ptr->size();
+            //}
+
+            //// If current bias is close to bias mean
+            // if( std::abs( bias - bias_mean ) < 10 )
+            //{
+            //    lane_bias_history_ptr->erase( lane_bias_history_ptr->begin() );
+            //    lane_bias_history_ptr->push_back( bias );
+            //    bias_sum = std::accumulate( lane_bias_history_ptr->begin(),
+            //                                lane_bias_history_ptr->end(), 0.0 );
+            //    bias_mean = bias_sum / lane_bias_history_ptr->size();
+            //}
+
+            /*for( auto bias : left_lane_bias_history )
+            {
+                cout << bias << ",";
+                        }*/
+            /*cout << endl;
+            cout << "bias mean of history is: " << bias_mean << ", "
+                 << "current bias mean is: " << bias << endl;
+            cout << "slope mean of history is: " << slope_mean << ", "
+                 << "current slope mean is: " << slope << endl;*/
+
+			// y = kx+b, x = (y-b)/k
+            if( lane_name == "r" )
+            {
+                right_lane_.at( 0 ).x = ( right_lane_.at( 0 ).y - bias_mean ) / slope_mean;
+                right_lane_.at( 1 ).y = slope_mean * right_lane_.at( 1 ).x + bias_mean;
+            }
+            else
+            {
+                left_lane_.at( 0 ).x = ( left_lane_.at( 0 ).y - bias_mean ) / slope_mean;
+                left_lane_.at( 1 ).y = slope_mean * left_lane_.at( 1 ).x + bias_mean;
+            }
+        }
+    }
     // Stop Lane Detection
     // void isStopLanePresent( Mat img )
     //{
@@ -447,7 +753,7 @@ protected:
         cv::Mat image8U;
         cv::Rect region( 0, 0, img.cols, img.rows * 0.55 );
         cv::Mat img_region = img( region );
-        imshow( "img_region", img_region );
+
         if( img_region.empty() )
         {
             std::cerr << "empty \n";
@@ -483,7 +789,7 @@ protected:
         // detect red color
         cv::Mat mask_red;
         cv::inRange( hsv_img, lower_red, upper_red, mask_red );
-        imshow( "mask red", mask_red );
+        // imshow( "mask red", mask_red );
 
         // how many pixels are in red
         int red_pixels = cv::countNonZero( mask_red );
@@ -509,6 +815,7 @@ protected:
     {
         if( left_lane_.empty() || right_lane_.empty() )
         {
+            steeringControl_with_edge_error( img );
             return;
         }
         // Use PID controller to control steering
@@ -527,18 +834,17 @@ protected:
         double steer_error_P =
             target_point - curr_point;  // current steering error = the difference between target
                                         // position and current position
-        double steer_erro_D =
+        double steer_error_D =
             steer_error_P - steer_error_old_;  // The rate of change of the error = the difference
                                                // between current steering error and before
         steer_error_old_ = steer_error_P;
         steer_error_I_ = steer_error_I_ + steer_error_P;
-        double steer_output = steer_error_P * steer_P_ + steer_erro_D * steer_D_ +
+        double steer_output = steer_error_P * steer_P_ + steer_error_D * steer_D_ +
                               steer_I_ * steer_error_I_;  // The output from PD controller
 
-        /*cout << "Steering error:" << steer_error_P << ", " << steer_error_I_ << ", " <<
-           steer_erro_D
-             << endl;*/
-
+        cout << "Steering error:" << steer_error_P << ", " << steer_error_I_ << ", " << steer_error_D
+             << "Steering output = " << steer_output_norm_ << endl;
+        saveToCSV_PID( steer_error_P, steer_error_I_, steer_error_D, steer_output / ( img.cols / 2 ));
         // normalize the output between -1 and 1
         steer_output_norm_ = steer_output / ( img.cols / 2 );
 
@@ -548,6 +854,47 @@ protected:
         }
     }
 
+    void steeringControl_with_edge_error( cv::Mat img )
+    {
+        int height = img.rows;
+        double P = 7 / 1e3;
+        double I = 3 / 1e5;
+        double D = 0;
+        double steer_error_P;
+
+        if( left_lane_.empty() )
+        {
+            steer_error_P = 400 - right_lane_.at( 1 ).y;
+        }
+        else if( right_lane_.empty() )
+        {
+            steer_error_P = left_lane_.at( 1 ).y - 400;
+        }
+        double steer_error_D =
+            steer_error_P - steer_error_old_;  // The rate of change of the error = the difference
+                                               // between current steering error and before
+        steer_error_old_ = steer_error_P;
+        steer_error_I_ = steer_error_I_ + steer_error_P;
+        double steer_output =
+            steer_error_P * P + steer_error_D * D + steer_I_ * I;  // The output from PD controller
+
+        cout << "Steering error:" << steer_error_P << ", " << steer_error_I_ << ", " << steer_error_D
+             << "Steering output = " << steer_output << endl;
+        steer_output_norm_ = steer_output;
+        if( steer_output > 1 )
+        {
+            steer_output_norm_ = 1;
+        }
+        else if( steer_output < -1 )
+        {
+            steer_output_norm_ = -1;
+        }
+
+        if( steer_output_norm_ > -0.05 && steer_output_norm_ < 0.05 )
+        {
+            steer_output_norm_ = 0;
+        }
+    }
     /* Aufgabe4: throttle control*/
     bool processPoseVelocity( tronis::PoseVelocitySub* msg )
     {
@@ -592,11 +939,11 @@ protected:
                 {
                     // filter detected cars which in other lane
                     distance = sqrt( pow( pos_x / 100, 2 ) + pow( pos_y / 100, 2 ) );
-                  /*  cout << " rightLaneVehicle.count( " << vehicle_name
-                         << " )= " << rightLaneVehicle.count( vehicle_name )
-                         << " leftLaneVehicle.count( " << vehicle_name
-                         << " )= " << leftLaneVehicle.count( vehicle_name ) << "pos_y = " << pos_y
-                         << endl;*/
+                    /*  cout << " rightLaneVehicle.count( " << vehicle_name
+                           << " )= " << rightLaneVehicle.count( vehicle_name )
+                           << " leftLaneVehicle.count( " << vehicle_name
+                           << " )= " << leftLaneVehicle.count( vehicle_name ) << "pos_y = " << pos_y
+                           << endl;*/
 
                     // if it's first time to detect this car
                     if( rightLaneVehicle.count( vehicle_name ) == 0 &&
@@ -607,14 +954,14 @@ protected:
                             rightLaneVehicle[vehicle_name] = distance;
                             distance_ = distance;
 
-                            cout << vehicle_name
-                                 << "is in right lane, distance from it = " << distance << endl;
+                            /* cout << vehicle_name
+                                  << "is in right lane, distance from it = " << distance << endl;*/
                         }
                         else
                         {
                             leftLaneVehicle[vehicle_name] = distance;
-                            cout << vehicle_name
-                                 << "is in left lane, distance from it = " << distance << endl;
+                            /*cout << vehicle_name
+                                 << "is in left lane, distance from it = " << distance << endl;*/
                         }
                     }
                     // The car has been detected
@@ -625,14 +972,14 @@ protected:
                             rightLaneVehicle[vehicle_name] = distance;
                             distance_ = distance;
 
-                            cout << vehicle_name
-                                 << "is in right lane, distance from it = " << distance << endl;
+                            /*cout << vehicle_name
+                                 << "is in right lane, distance from it = " << distance << endl;*/
                         }
                         else
                         {
                             leftLaneVehicle[vehicle_name] = distance;
-                            cout << vehicle_name
-                                 << "is in left lane, distance from it = " << distance << endl;
+                            /*cout << vehicle_name
+                                 << "is in left lane, distance from it = " << distance << endl;*/
                         }
                     }
                 }
@@ -641,6 +988,7 @@ protected:
 
         if( distance_ >= max_detected_distance_ )
         {
+            distance_ = std::numeric_limits<double>::infinity();
             isCardAhead = false;
         }
         else
@@ -803,19 +1151,35 @@ protected:
         }
     }
 
-    void saveToCSV()
+    void saveToCSV( vector<Point> lane, bool isRightLane )
     {
-        std::ofstream distanceData;
-        distanceData.open( "D:\\200_Projekte\\distanceData.csv", ios::app );
-        if( isCardAhead )
+        std::ofstream lines_data;
+        lines_data.open( "D:\\200_Projekte\\distanceData.csv", ios::app );
+
+        double slope = static_cast<double>( lane.at( 1 ).y - lane.at( 0 ).y ) /
+                       ( lane.at( 1 ).x - lane.at( 0 ).x );
+        if( isRightLane )
         {
-            distanceData << to_string( distance_ ) << "," << to_string( throttle_output_norm_ )
-                         << "," << ego_velocity_ << endl;
+            lines_data << slope << endl;
+        }
+        else
+        {
+            lines_data << ""
+                       << "," << slope << endl;
         }
 
-        distanceData.close();
+        lines_data.close();
     }
 
+	 void saveToCSV_PID( double P,double I,double D, double output )
+    {
+        std::ofstream lines_data;
+        lines_data.open( "D:\\200_Projekte\\distanceData.csv", ios::app );
+
+        lines_data << P << "," << I << "," << D << "," << output << endl;
+
+        lines_data.close();
+    }
     std::string formatDouble( double value )
     {
         std::ostringstream streamObj;
@@ -830,11 +1194,16 @@ public:
     {
         std::ofstream distanceData;
         distanceData.open( "D:\\200_Projekte\\distanceData.csv", std::ios::trunc );
-        distanceData << "Distance"
+        /*distanceData << "Slope"
                      << ","
-                     << "Throttle Output"
+                     << "Bias" << endl;*/
+        distanceData << "P"
                      << ","
-                     << "Ego Velocity" << endl;
+                     << "I"
+                     << ","
+                     << "D"
+                     << ","
+                     << "output" << endl;
         distanceData.close();
     }
     // Helper functions, no changes needed
@@ -935,6 +1304,7 @@ protected:
         original_image_ = image_;
 
         detectLanes();
+        processed_frames += 1;
     }
 };
 
@@ -1021,9 +1391,9 @@ int main( int argc, char** argv )
 
 // int main( int argc, char** argv )
 //{
-//    Mat original_img =cv::imread( "C:\\Users\\am3s33\\Pictures\\Camera Roll\\stop_test7.png" );
+//    Mat original_img = cv::imread( "C:\\Users\\am3s33\\Pictures\\Camera Roll\\test1.png" );
 //
 //    LaneAssistant laneassistant;
-//    laneassistant.stopLineDetectionMethod( original_img );
+//    laneassistant.processImage( original_img );
 //    waitKey( 0 );
 //}
