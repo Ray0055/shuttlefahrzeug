@@ -52,7 +52,7 @@ public:
 
         cv::Mat bird_eye_view_img = birdEyeView( edge_detected_img, true );
 
-        laneDetection_withBEV( bird_eye_view_img, image_ );
+        //laneDetection_withBEV( bird_eye_view_img, image_ );
         imshow( "bird eye view", bird_eye_view_img );
         imshow( "color detection", color_filtered_img );
         imshow( "color detection", image_ );
@@ -426,113 +426,6 @@ protected:
         }
     }
 
-    void laneDetection_withBEV( cv::Mat img, cv::Mat output_img )
-    {
-        std::vector<Vec4i> raw_lines;
-        cv::Mat img_color;
-        cv::HoughLinesP( img, raw_lines, 6, CV_PI / 180, 100, 40,
-                         10 );  // Probabilistic Line Transform 1 and CV_PI:resolution , 50 :
-                                // threshold of number of votes, 50 : minLineLength, 10: maxLineGap
-
-        if( raw_lines.empty() )
-        {
-            cout << "no line is detected!" << endl;
-        }
-
-        cvtColor( img, img_color, COLOR_GRAY2BGR );
-        // painting lines in original image
-        for( size_t i = 0; i < raw_lines.size(); i++ )
-        {
-            Vec4i l = raw_lines[i];
-
-            line( img_color, Point( l[0], l[1] ), Point( l[2], l[3] ), Scalar( 0, 0, 255 ), 3,
-                  LINE_AA );
-        }
-
-        Mat histogram, result;
-
-        // Binary Image
-        Mat binary_img;
-        cv::threshold( img, binary_img, 128.0, 255.0, THRESH_BINARY );
-
-        // Taks a histogram of the image
-        cv::reduce( binary_img, histogram, 0, REDUCE_SUM, CV_32F );
-
-        // Find peaks of left and right halves of the histogram
-        int midpoint = histogram.size().width / 2;
-
-        int left_base = std::distance(
-            histogram.begin<int>(),
-            std::max_element( histogram.begin<int>(), histogram.begin<int>() + midpoint ) );
-        int right_base = std::distance(
-            histogram.begin<int>(),
-            std::max_element( histogram.begin<int>() + midpoint, histogram.end<int>() ) );
-
-        line( img_color, Point( left_base, 0 ), Point( left_base, img_color.rows ),
-              Scalar( 0, 255, 255 ), 3 );
-        line( img_color, Point( right_base, 0 ), Point( right_base, img_color.rows ),
-              Scalar( 0, 255, 255 ), 3 );
-        imshow( "raw_lines", img_color );
-        vector<Point> left_lines, right_lines, stop_lines;  // the points of left and right lanes
-        cv::cvtColor( img, img_color, COLOR_GRAY2BGR );
-
-        // devide all detected lines into 3 groups accroding to slope
-        for( const Vec4i& l : raw_lines )
-        {
-            double slope = static_cast<double>( l[3] - l[1] ) / ( l[2] - l[0] );
-            int margin = 40;
-            if( abs( ( l[0] + l[2] ) / 2 - right_base ) < margin )
-            {
-                right_lines.emplace_back( l[0], l[1] );
-                right_lines.emplace_back( l[2], l[3] );
-            }
-            else if( abs( ( l[0] + l[2] ) / 2 - left_base ) < margin
-                     //&& bias > 350 && bias < 450
-            )
-            {
-                left_lines.emplace_back( l[0], l[1] );
-                left_lines.emplace_back( l[2], l[3] );
-            }
-            /*else if( -0.1 < slope && slope < 0.1 )
-            {
-                stop_lines.emplace_back( l[0], l[1] );
-                stop_lines.emplace_back( l[2], l[3] );
-            }*/
-        }
-
-        // merge and draw right lane
-        if( !right_lines.empty() )
-        {
-            right_lane_ = mergeLines_withBEV( right_lines );
-            // laneDetectionRobust( right_lane_, "r" );
-            line( output_img, right_lane_.at( 0 ), right_lane_.at( 1 ), Scalar( 0, 255, 0 ), 5,
-                  LINE_AA );
-        }
-        else
-        {
-            line( output_img, right_lane_.at( 0 ), right_lane_.at( 1 ), Scalar( 255, 255, 0 ), 5,
-                  LINE_AA );
-            cout << "Right lane is not detected, previous detection will be used." << endl;
-        }
-        // merge and draw left lane
-        if( !left_lines.empty() )
-        {
-            left_lane_ = mergeLines_withBEV( left_lines );
-
-            // laneDetectionRobust( left_lane_, "l" );
-
-            line( output_img, left_lane_.at( 0 ), left_lane_.at( 1 ), Scalar( 255, 0, 0 ), 5,
-                  LINE_AA );
-        }
-
-        else
-        {
-            line( output_img, left_lane_.at( 0 ), left_lane_.at( 1 ), Scalar( 0, 0, 255 ), 5,
-                  LINE_AA );
-            cout << "Left lane is not detected, previous detection will be used." << endl;
-        }
-    }
-
     /*
      * merge all line which point to same direction to one line
      *
@@ -568,45 +461,6 @@ protected:
         }
 
         point2.y = k * ( point2.x - point1.x ) + point1.y;
-
-        vector<Point> lane_points;
-        lane_points.push_back( point1 );
-        lane_points.push_back( point2 );
-
-        //
-        // line( image, point1, point2, color, 2, LINE_AA );
-
-        // Save all the lane points
-        /*vector<Point> points_lane;
-        for( int i = img_height / 2 + 40; i < img_height; i++ )
-        {
-            points_lane.push_back(
-                Point( point1.x + ( i - point1.y ) / line_parameters[1] * line_parameters[0], i ) );
-        }*/
-
-        return lane_points;
-    }
-    vector<Point> mergeLines_withBEV( const vector<Point>& points )
-    {
-        Vec4f line_parameters;
-        int img_height = original_image_.rows;
-        /* fitLine(input vector, output line, distance type, distance parameter, radial
-         parameter, angle parameter) output (vx, vy, x, y)*/
-        fitLine( points, line_parameters, DIST_L2, 0, 0.01, 0.01 );
-
-        Point point1, point2;
-        point1.x = line_parameters[2];
-        point1.y = line_parameters[3];
-        double k = line_parameters[1] / line_parameters[0];
-
-        //
-        int startY = 0;
-        point1.x = point1.x + ( startY - point1.y ) / k;
-        point1.y = startY;
-
-        //
-        point2.x = point1.x + ( img_height - point1.y ) / k;
-        point2.y = img_height;
 
         vector<Point> lane_points;
         lane_points.push_back( point1 );
@@ -815,7 +669,7 @@ protected:
     {
         if( left_lane_.empty() || right_lane_.empty() )
         {
-            steeringControl_with_edge_error( img );
+            steeringControlForMissingLanes( img );
             return;
         }
         // Use PID controller to control steering
@@ -854,7 +708,7 @@ protected:
         }
     }
 
-    void steeringControl_with_edge_error( cv::Mat img )
+    void steeringControlForMissingLanes( cv::Mat img )
     {
         int height = img.rows;
         double P = 7 / 1e3;
