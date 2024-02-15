@@ -20,7 +20,9 @@
 
 ## Lane Detection
 最后一步则是结合上一步识别出的边缘拟合出左右两车道. 
+这里有两种方式去拟合车道线: 直线拟合和二次曲线拟合。
 
+### 直线拟合
 首先用 `cv::HoughLinesP()` 来识别出边缘上的线段. 通过调整函数中的参数, 会得到长度/宽度/距离不一样的线段群. 在这里可以尽量将参数中线段的长度阈值调整的大一点, 这样可以避免被道路中小的杂物或者光斑影响. 
 
 得到合适的线段群之后, 需要进行左右车道的区分. 可以直接用slope的范围进行区分. 将正的斜率分为右车道, 负的斜率分为左车道. 值得注意的是, 如果仅仅通过正负区分车道是不够的, 如果识别到停止线或者斑马线等斜率特别小的线段, 也会被分入左车道或者右车道, 对车道的识别进行干扰. 
@@ -32,7 +34,17 @@
 为了使结果更加的鲁棒, 这里用所识别的直线的历史数据的平均值来代替当前所识别的直线. 效果很好, 如果不采用历史平均值, 由于每次识别的线段群不一样, 所拟合的车道线也会有细微的差距. 这个差距在实际应用的体现就是所识别的车道线一直在抖动. 
 
 最后将所识别的车道线绘制到原图上即可.
+### 曲线拟合
 
+曲线拟合采用了滑动窗口的方法。 
+
+曲线拟合不需要用到edge detection, 而是将 color detection之后的图像转化为bird eye view. 然后通过计算每一列的像素值可以得到一个直方图 histogram, 通过计算计算直方图像素值在图像左半部分和右半部分的最大值，可以得到车道线的大致位置，为后续区分左右车道线的位置做准备。
+
+然后用滑动窗口的方法，寻找符合条件的左右车道线像素点， 并记录其坐标。得到坐标之后调用`PolynomialFit()` 来拟合二次曲线， 并将二次曲线ax^2+bx+c的参数a,b,c保存， 为下一次的识别做准备。
+
+为了提高效率， 并不需要每次都需要转化直方图，重新寻找像素点。而是在上一次识别的基础上，直接在上一次的车道线的附件寻找满足条件的像素点，具体实现在`line_detection_by_previous()`
+
+得到的曲线实际是bird eye view视图下的曲线， 还需要将其转化回原视图中。
 # Steering Control
 转向控制中, 采用PID控制器得到合适的转向值. 对于如何定义比例误差P, 有非常多的参考值可供选择: 
 1. 通过识别的左右两车道, 可以计算出一条车道中心和车辆中心的连线. 这条线段表示了车辆的方向. 在正常行驶过程中, 该连线应该一直保持竖直. 因此, 可以用该连线和垂直方向的夹角作为比例误差P.
@@ -66,7 +78,8 @@ After isolating white or yellow lane lines, edge detection is applied using `cv:
 
 ## Lane Detection
 The final step in lane detection involves merging the previously identified edges to form the lanes on each side. 
-
+There are two ways to fit the lane lines: straight line fitting and quadratic curve fitting.
+### Straight line fitting
 Initially, `cv::HoughLinesP()` is utilized to detect line segments on edges by fine-tuning parameters within the function, which yields groups of line segments with varying lengths, widths, and distances. By adjusting the parameters, especially increasing the threshold for the length of the segments, it's possible to minimize the impact of small road debris or light reflections, enhancing the accuracy of the detection process.
 
 After obtaining the appropriate group of line segments, it is necessary to distinguish between the left and right lanes, which can be done directly by the range of the slope. Positive slopes are categorized as the right lane, and negative slopes as the left lane. However, it's important to note that merely using the positive or negative distinction may not be sufficient. Lines with very small slopes, such as stop lines or crosswalk lines, could also be incorrectly classified into the left or right lanes, thus interfering with accurate lane detection.
@@ -78,6 +91,18 @@ After identifying the raw lines for each lane, these segments need to be merged 
 To enhance the robustness of the results, the historical data average of identified lines is used instead of the currently detected lines. This method significantly improves performance, as relying solely on current detection can lead to minor discrepancies due to the variation in detected line segments with each scan, manifesting as jitter in the recognized lane lines during practical application. 
 
 Finally, the identified lane lines are drawn onto the original image to complete the lane detection process.
+
+### quadratic curve fitting.
+Curve fitting uses a sliding window approach. 
+
+Curve fitting does not require edge detection, but rather transforms the image after color detection into a bird's eye view. Then, by calculating the pixel values of each column, a histogram can be generated. By computing the maximum pixel values in the left and right halves of the image from this histogram, the approximate positions of the lane lines can be determined, preparing for the subsequent differentiation of the left and right lane positions.
+
+Next, the sliding window method is used to find the pixels that meet the criteria for the left and right lane lines, and their coordinates are recorded. After obtaining the coordinates, `PolynomialFit()` is called to fit a quadratic curve, and the parameters a, b, c of the quadratic curve ax^2+bx+c are saved for the preparation of the next detection.
+
+To improve efficiency, it is not necessary to transform the histogram and find new pixels each time. Instead, based on the previous detection, pixels that meet the criteria are searched for in the vicinity of the previous lane lines, specifically implemented in `line_detection_by_previous()`.
+
+The resulting curve is actually the curve in the bird's eye view and needs to be transformed back into the original view.
+
 # Steering Control
 In steering control, a PID controller is used to determine the appropriate steering value. There are several reference values for defining the proportional error P:
 1. By identifying the left and right lanes, a line connecting the lane center and vehicle center can be calculated. This line indicates the vehicle's direction, which should remain vertical during normal driving. Thus, the angle between this line and the vertical direction can serve as the proportional error P.
@@ -94,7 +119,7 @@ Dieses Projekt ist in drei Teile gegliedert: Fahrspurerkennung, Lenkung und Gasp
 
 # Fahrspur-Erkennung
 ## Erkennung der Region
-Der erste Schritt besteht darin, die Region von Interesse (ROI) aus dem Kamerabild auszuschneiden und sich dabei auf den Bereich über der Motorhaube und neben den beiden Fahrspuren zu konzentrieren, wobei `cv::fillpoly` zum Zeichnen und `cv::bitwise_and()` zum Zuschneiden verwendet wird.
+Im ersten Schritt wird die Region von Interesse (ROI) aus dem Kamerabild ausgeschnitten, wobei der Fokus auf dem Bereich über der Motorhaube und neben den Fahrspuren liegt. Zum Zeichnen wird cv::fillpoly und zum Ausschneiden cv::bitwise_and() verwendet.
 
 ## Farberkennung
 Der zweite Schritt umfasst die Farbfilterung innerhalb des ROI-Bereichs und konzentriert sich auf weiße oder gelbe Fahrspurlinien unter Verwendung des HSV-Farbraums. Weiße Linien erfordern hohe Helligkeitswerte, während gelbe Linien bestimmte Farbton- und Sättigungsbereiche benötigen. 
@@ -102,14 +127,16 @@ Der zweite Schritt umfasst die Farbfilterung innerhalb des ROI-Bereichs und konz
 Es ist wichtig zu beachten, dass Reflexionen, Schnee oder weiße Objekte auf der Straße die Erkennung beeinträchtigen können. Die Verwendung des HSV-Farbraums eignet sich daher nur für einfache Straßenverhältnisse; komplexere Szenarien erfordern unter Umständen fortschrittlichere Farbfiltermethoden, wie z. B. die Einbeziehung von Deep-Learning-Techniken.
 
 ## Kantendetektion
-Nach der Isolierung weißer oder gelber Fahrbahnlinien wird die Kantenerkennung mit `cv::GaussianBlur()` zur Rauschunterdrückung und entweder mit `cv::Canny()` oder `cv::Sobel()` zur Kanten- und Eckenerkennung durchgeführt, wobei Canny im Allgemeinen bessere Ergebnisse liefert.
+Anschließend erfolgt die Kantendetektion, wobei cv::GaussianBlur zur Rauschreduzierung und cv::Canny() (oder alternativ cv::Sobel()) für die präzise Kanten- und Eckenerkennung eingesetzt wird, wobei cv::Canny generell überlegene Ergebnisse erzielt.
 
-## Lane Detection
+## Fahrspurerkennung
 Der letzte Schritt der Fahrspurerkennung besteht darin, die zuvor identifizierten Kanten zu den Fahrspuren auf jeder Seite zusammenzufügen. 
+Es gibt zwei Methoden zur Anpassung von Fahrspurlinien: Geradenanpassung und quadratische Kurvenanpassung.
 
+### Geradenanpassung
 Zunächst wird `cv::HoughLinesP()` verwendet, um Liniensegmente an den Kanten zu erkennen, indem die Parameter innerhalb der Funktion fein abgestimmt werden, was zu Gruppen von Liniensegmenten mit unterschiedlichen Längen, Breiten und Abständen führt. Durch die Anpassung der Parameter, insbesondere durch die Erhöhung des Schwellenwerts für die Länge der Segmente, ist es möglich, die Auswirkungen von kleinen Straßenabfällen oder Lichtreflexionen zu minimieren und die Genauigkeit des Erkennungsprozesses zu verbessern.
 
- Nachdem die entsprechende Gruppe von Liniensegmenten ermittelt wurde, muss zwischen der linken und der rechten Spur unterschieden werden, was direkt über den Bereich der Steigung erfolgen kann. Positive Steigungen werden als rechte Spur und negative Steigungen als linke Spur kategorisiert. Es ist jedoch wichtig zu beachten, dass die bloße Unterscheidung zwischen positiven und negativen Steigungen möglicherweise nicht ausreicht. Linien mit sehr geringen Steigungen, wie z. B. Haltelinien oder Zebrastreifen, könnten ebenfalls fälschlicherweise der linken oder rechten Fahrspur zugeordnet werden und so die genaue Fahrspurerkennung beeinträchtigen.
+Nachdem die entsprechende Gruppe von Liniensegmenten ermittelt wurde, muss zwischen der linken und der rechten Spur unterschieden werden, was direkt über den Bereich der Steigung erfolgen kann. Positive Steigungen werden als rechte Spur und negative Steigungen als linke Spur kategorisiert. Es ist jedoch wichtig zu beachten, dass die bloße Unterscheidung zwischen positiven und negativen Steigungen möglicherweise nicht ausreicht. Linien mit sehr geringen Steigungen, wie z. B. Haltelinien oder Zebrastreifen, könnten ebenfalls fälschlicherweise der linken oder rechten Fahrspur zugeordnet werden und so die genaue Fahrspurerkennung beeinträchtigen.
 
 Hier ein nützlicher Trick: Importieren Sie die Neigungen aller erkannten Rohlinien in eine CSV-Datei, fahren Sie das Fahrzeug manuell durch den gesamten Parcours, und analysieren Sie dann den Neigungsbereich in der CSV-Datei. In meinem Fall war der Neigungsbereich für die rechte Spur [0,3, 0,75] und für die linke Spur [-0,75, -0,2].
 
@@ -118,6 +145,17 @@ Nach der Identifizierung der rohen Linien für jede Fahrspur müssen diese Segme
 Um die Robustheit der Ergebnisse zu verbessern, wird der historische Datendurchschnitt der erkannten Linien anstelle der aktuell erkannten Linien verwendet. Diese Methode verbessert die Leistung erheblich, da die alleinige Verwendung der aktuellen Erkennung zu geringfügigen Diskrepanzen führen kann, da die erkannten Liniensegmente bei jedem Scan variieren, was sich in der praktischen Anwendung in Form von Schwankungen der erkannten Fahrspurlinien äußert. 
 
 Abschließend werden die erkannten Fahrspurlinien auf das Originalbild gezeichnet, um den Prozess der Fahrspurerkennung abzuschließen.
+
+### Kurvenanpassung 
+Die Kurvenanpassung verwendet einen gleitenden Fensteransatz.
+
+Für die Kurvenanpassung ist keine Kantenentdeckung erforderlich, sondern das Bild nach der Farberkennung wird in eine Vogelperspektive umgewandelt. Dann kann durch das Berechnen der Pixelwerte jeder Spalte ein Histogramm erstellt werden. Durch die Berechnung der maximalen Pixelwerte in der linken und rechten Hälfte des Bildes aus diesem Histogramm können die ungefähren Positionen der Fahrspurlinien bestimmt werden, was die anschließende Differenzierung der Positionen der linken und rechten Fahrspurlinien vorbereitet.
+
+Als Nächstes wird die Methode des gleitenden Fensters verwendet, um die Pixel zu finden, die den Kriterien für die linken und rechten Fahrspurlinien entsprechen, und ihre Koordinaten werden aufgezeichnet. Nachdem die Koordinaten erhalten wurden, wird `PolynomialFit()` aufgerufen, um eine quadratische Kurve anzupassen, und die Parameter a, b, c der quadratischen Kurve ax^2+bx+c werden für die Vorbereitung der nächsten Erkennung gespeichert.
+
+Um die Effizienz zu verbessern, ist es nicht notwendig, jedes Mal das Histogramm umzuwandeln und neue Pixel zu finden. Stattdessen werden basierend auf der vorherigen Erkennung Pixel, die die Kriterien erfüllen, in der Nähe der vorherigen Fahrspurlinien gesucht, speziell implementiert in `line_detection_by_previous()`.
+
+Die resultierende Kurve ist tatsächlich die Kurve in der Vogelperspektive und muss zurück in die Originalansicht transformiert werden.
 
 # Lenkungsregelung
 Bei der Lenkregelung wird ein PID-Regler verwendet, um den geeigneten Lenkwert zu bestimmen. Es gibt mehrere Referenzwerte für die Definition der proportionalen Abweichung P:
