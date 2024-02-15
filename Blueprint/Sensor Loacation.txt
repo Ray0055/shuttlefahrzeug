@@ -1,0 +1,2 @@
+Camera： X=216.160767， Y=0, Z=127.545013
+BoundingBox and PoseVelocity is 0,0,0
